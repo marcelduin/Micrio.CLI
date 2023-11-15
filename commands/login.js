@@ -7,14 +7,6 @@ let account = conf.get('account');
 
 const to = (fn,ms=1000) => new Promise(ok => setTimeout(async () => {await fn?.();ok()}, ms));
 
-function log(str, overwrite=false) {
-	if(overwrite) {
-		process.stdout.clearLine(0);
-		process.stdout.cursorTo(0);
-	}
-	process.stdout.write(str + (overwrite ? '\r' : '\n'));
-}
-
 export async function login() {
 	const id = createGUID();
 
@@ -39,5 +31,5 @@ export async function login() {
 			console.log(chalk.red('Could not log in. Please try again.'));
 		})
 	}
-	else log('Something went wrong. Please try again later.')
+	else console.log('Something went wrong. Please try again later.')
 }
