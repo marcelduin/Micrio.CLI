@@ -36,7 +36,7 @@ program.command('logout')
 program.command('upload')
 	.description('Upload your images to the Micrio dashboard')
 	.argument('<files>', 'One or more image files')
-	.requiredOption('--target <url>', 'The Micrio dashboard url of the target folder')
+	.requiredOption('-t, --target <url>', 'The Micrio dashboard url of the target folder')
 	.action(upload);
 
 program.parse();

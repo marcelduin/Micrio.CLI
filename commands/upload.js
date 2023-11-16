@@ -24,12 +24,28 @@ export async function upload(attr, opts) {
 	}
 
 	const start = Date.now();
-	const files = attr.split(' ');
-	for(const f of files) try { await handle(f, url.pathname) } catch(e) {
+
+	const allFiles = fs.readdirSync('.').filter(f => !fs.lstatSync(f).isDirectory());
+	let files = attr.split(' ').map(f => {
+		if(!/\*/.test(f)) return [f]
+		const rx = new RegExp(f.replace(/\./g,'\\.').replace(/\*/g,'.+'), 'i');
+		return allFiles.filter(f => rx.test(f));
+	}).reduce((a, b) => [...a,...b], []);
+	files = files.filter((f,i) => files.indexOf(f) == i);
+
+	if(!files.length) return error('No images to process');
+
+	const numLen = (files.length+'').length;
+	const strLen = 4 + numLen * 2 + Math.max(...files.map(f => f.length));
+
+	for(let i=0;i<files.length;i++) try {
+		process.stdout.write(`[${(i+1+'').padStart(numLen)}/${files.length}] ${files[i]}\r`);
+		await handle(files[i], url.pathname, strLen);
+	} catch(e) {
 		return error(e?.message??e??'An unknown error occurred');
 	}
 
-	console.log(`Succesfully completed in ${Math.round(Date.now()-start)/1000}s.`);
+	console.log(`Succesfully uploaded ${files.length} image${files.length==1?'':'s'} in ${Math.round(Date.now()-start)/1000}s.`);
 }
 
 const SIGNED_URIS = 20;
@@ -39,15 +55,13 @@ const walkSync = (dir, callback) =>  fs.lstatSync(dir).isDirectory()
 	? fs.readdirSync(dir).map(f => walkSync(path.join(dir, f), callback))
 	: callback(dir);
 
-async function handle(f, folder) {
+async function handle(f, folder, pos) {
 	if(!fs.existsSync(f)) throw new Error(`File '${f}' not found`);
-
-	console.log(`Starting '${f}'`);
 
 	const res = await api(`/api/cli${folder}/create?f=${encodeURIComponent(f)}`);
 	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions?');
 
-	console.log('Processing... this could take a while depending on the image size.');
+	log('Processing...', pos);
 	execSync(`vips dzsave ${f}[0] ${res.id} --layout dz --tile-size 1024 --overlap 0 --suffix .webp[Q=85] --strip`);
 	fs.renameSync(res.id+'_files', res.id);
 
@@ -72,7 +86,7 @@ async function handle(f, folder) {
 		const queue = Object.values(running);
 		if(queue.length >= UPLOAD_THREADS) await Promise.any(queue);
 		if(!uploadUris.length) await getUploadUris();
-		log(`Uploading ${++count} / ${total}...`, true);
+		log(`Uploading ${++count} / ${total}...`, pos);
 		const tile = tiles.shift();
 		running[tile] = fetch(uploadUris.shift(), {
 			method: 'PUT',
@@ -84,19 +98,15 @@ async function handle(f, folder) {
 	// Finalize
 	await api(`/api/cli${folder}/@${res.id}?w=${width}&h=${height}`);
 
-	process.stdout.clearLine(0);
-	console.log('Upload complete.')
+	log('OK', pos, true);
 
 	fs.rmSync(res.id, {recursive: true, force: true});
 	fs.rmSync(res.id+'.dzi');
 
-	console.log();
 }
 
-function log(str, overwrite=false) {
-	if(overwrite) {
-		process.stdout.clearLine(0);
-		process.stdout.cursorTo(0);
-	}
-	process.stdout.write(str + (overwrite ? '\r' : '\n'));
+function log(str, pos, newLine) {
+	process.stdout.cursorTo(pos);
+	process.stdout.clearLine(1);
+	process.stdout.write(' | ' + str + (newLine ? '\n' : '\r'));
 }
