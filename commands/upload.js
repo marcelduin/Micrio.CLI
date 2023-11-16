@@ -73,9 +73,10 @@ async function handle(f, folder, pos) {
 
 	async function getUploadUris() {
 		const files = tiles.slice(0, SIGNED_URIS);
-		if(files.length) uploadUris.push(...await api(`/api/${folder.split('/')[1]}/store?f=${files.map(f => f.replace(/\\/g,'/')).join(',')}`).then(r =>
-			r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${files[i]}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
-		));
+		if(files.length) uploadUris.push(...await api(`/api/${folder.split('/')[1]}/store?f=${files.map(f => f.replace(/\\/g,'/')).join(',')}`).then(r => {
+			if(!r) throw new Error('Upload permission denied.');
+			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${files[i]}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
+		}));
 	}
 
 	const total = tiles.length;
