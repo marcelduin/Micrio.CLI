@@ -38,6 +38,7 @@ program.command('upload')
 	.argument('<files>', 'One or more image files, wildcards supported (such as *.jpg)')
 	.requiredOption('-d, --destination <url>', 'The Micrio dashboard destination folder URL')
 	.addOption(new Option('-f, --format <format>', 'Tile format').choices(['webp', 'jpg']).default('webp'))
+	.addOption(new Option('-t, --type <type>', 'Image type').choices(['2d', 'omni', '360']).default('2d'))
 	.action(upload);
 
 program.parse();

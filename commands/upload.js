@@ -41,9 +41,11 @@ export async function upload(attr, opts) {
 	const numLen = (files.length+'').length;
 	const strLen = 4 + numLen * 2 + Math.max(...files.map(f => f.length));
 
+	let omniId;
+
 	for(let i=0;i<files.length;i++) try {
 		process.stdout.write(`[${(i+1+'').padStart(numLen)}/${files.length}] ${files[i]}\r`);
-		await handle(files[i], url.pathname, opts.format, strLen);
+		await handle(files[i], url.pathname, opts.format, opts.type, i, files.length, strLen, omniId, id => omniId = id);
 	} catch(e) {
 		return error(e?.message??e??'An unknown error occurred');
 	}
@@ -59,15 +61,21 @@ const walkSync = (dir, callback) =>  fs.lstatSync(dir).isDirectory()
 	? fs.readdirSync(dir).map(f => walkSync(path.join(dir, f), callback))
 	: callback(dir);
 
-async function handle(f, folder, format, pos) {
+async function handle(f, folder, format, type, idx, length, pos, omniId, setOmniId) {
 	if(!fs.existsSync(f)) throw new Error(`File '${f}' not found`);
 
-	const res = await api(`/api/cli${folder}/create?f=${encodeURIComponent(f)}`);
+	const res = omniId ? {id: omniId} : await api(`/api/cli${folder}/create?f=${encodeURIComponent(f)}&t=${type}`);
 	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions?');
 
 	log('Processing...', pos);
 	execSync(`vips dzsave ${f}[0] ${res.id} --layout dz --tile-size 1024 --overlap 0 --suffix .${format}[Q=85] --strip`);
-	fs.renameSync(res.id+'_files', res.id);
+
+	if(type=='omni') {
+		if(!omniId) setOmniId(res.id);
+		fs.mkdirSync(res.id);
+		fs.renameSync(res.id+'_files', res.id+'/'+idx);
+	}
+	else fs.renameSync(res.id+'_files', res.id);
 
 	const [,height,width] = /Height\="(\d+)"\n.*Width\="(\d+)"/m.exec(fs.readFileSync(res.id+'.dzi', 'utf-8'));
 
@@ -101,13 +109,12 @@ async function handle(f, folder, format, pos) {
 	}
 
 	// Finalize
-	await api(`/api/cli${folder}/@${res.id}?w=${width}&h=${height}&f=${format}`);
+	if(!omniId) await api(`/api/cli${folder}/@${res.id}?w=${width}&h=${height}&f=${format}&l=${length}`);
 
 	log('OK', pos, true);
 
 	fs.rmSync(res.id, {recursive: true, force: true});
 	fs.rmSync(res.id+'.dzi');
-
 }
 
 function log(str, pos, newLine) {
