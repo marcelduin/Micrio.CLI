@@ -9,9 +9,12 @@ const account = conf.get('account');
 
 const api = (path) => fetch(urlDashBase+path,{
 	headers: { Cookie: `.AspNetCore.Identity.Application=${account.base64};`}
-}).then(r => r?.ok && r.status == 200 ? r.json() : undefined, () => undefined);
+}).then(r => r?.json(), () => undefined).then(r => {
+	if(r?.error) throw new Error(r.error);
+	return r;
+});
 
-const error = (str) => console.log(chalk.red('error: ' + str));
+const error = (str) => console.log(chalk.red('Error: ') + str);
 
 export async function upload(attr, opts) {
 	if(!account?.email) return error(`Not logged in. Run 'micrio login' first`);
@@ -30,7 +33,7 @@ export async function upload(attr, opts) {
 		if(!/\*/.test(f)) return [f]
 		const rx = new RegExp(f.replace(/\./g,'\\.').replace(/\*/g,'.+'), 'i');
 		return allFiles.filter(f => rx.test(f));
-	}).reduce((a, b) => [...a,...b], []);
+	}).reduce((a, b) => [...a,...b], []).sort((a, b) => a > b ? 1 : a < b ? -1 : 0);
 	files = files.filter((f,i) => files.indexOf(f) == i);
 
 	if(!files.length) return error('No images to process');
@@ -60,7 +63,7 @@ async function handle(f, folder, format, pos) {
 	if(!fs.existsSync(f)) throw new Error(`File '${f}' not found`);
 
 	const res = await api(`/api/cli${folder}/create?f=${encodeURIComponent(f)}`);
-	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions? Note: if your account has custom cloud hosting, this CLI tool cannot be used.');
+	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions?');
 
 	log('Processing...', pos);
 	execSync(`vips dzsave ${f}[0] ${res.id} --layout dz --tile-size 1024 --overlap 0 --suffix .${format}[Q=85] --strip`);
