@@ -50,6 +50,27 @@ export async function upload(attr, opts) {
 		return error(e?.message??e??'An unknown error occurred');
 	}
 
+	if(omniId) {
+		console.log('Creating optimized viewing package...');
+		const tiles = [];
+		walkSync('basebin', t => tiles.push({
+			path: t.replace(/\\/g,'/').replace('basebin/',''),
+			buffer: fs.readFileSync(t)
+		}));
+		const path = `${omniId}/base.bin`;
+		const postUri = await api(`/api/${url.pathname.split('/')[1]}/store?f=${path}`).then(r => {
+			if(!r) throw new Error('Upload permission denied.');
+			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${path}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
+		});
+		await fetch(postUri[0], {
+			method: 'PUT',
+			body: generateMDP(tiles),
+			headers: { 'Content-Type': 'application/octet-stream' }
+		});
+		fs.rmSync('basebin', {recursive: true, force: true});
+		console.log('Done.');
+	}
+
 	console.log();
 	console.log(`Succesfully uploaded ${files.length} image${files.length==1?'':'s'} in ${Math.round(Date.now()-start)/1000}s.`);
 }
@@ -70,7 +91,8 @@ async function handle(f, folder, format, type, idx, length, pos, omniId, setOmni
 	log('Processing...', pos);
 	execSync(`vips dzsave ${f}[0] ${res.id} --layout dz --tile-size 1024 --overlap 0 --suffix .${format}[Q=85] --strip`);
 
-	if(type=='omni') {
+	const isOmni = type=='omni';
+	if(isOmni) {
 		if(!omniId) setOmniId(res.id);
 		fs.mkdirSync(res.id);
 		fs.renameSync(res.id+'_files', res.id+'/'+idx);
@@ -103,22 +125,50 @@ async function handle(f, folder, format, type, idx, length, pos, omniId, setOmni
 		const tile = tiles.shift();
 		running[tile] = fetch(uploadUris.shift(), {
 			method: 'PUT',
-			body: new Blob([fs.readFileSync(tile)], {type: 'image/webp'}),
-			headers: { 'Content-Type': 'image/webp' }
+			body: new Blob([fs.readFileSync(tile)], {type: `image/${format}`}),
+			headers: { 'Content-Type': `image/${format}` }
 		}).then(() => delete running[tile]);
 	}
 
 	// Finalize
-	if(!omniId) await api(`/api/cli${folder}/@${res.id}?w=${width}&h=${height}&f=${format}&l=${length}`);
+	if(!omniId) {
+		await api(`/api/cli${folder}/@${res.id}?w=${width}&h=${height}&f=${format}&l=${length}`);
+		fs.mkdirSync('basebin');
+	}
 
-	log('OK', pos, true);
+	// Move tile for base.bin generation
+	if(isOmni) {
+		let d = Math.max(width, height), l = 0;
+		while(d > 1024) { d /= 2; l++; }
+		let dzLevels = 0, max = Math.max(width, height);
+		do dzLevels++; while ((max /= 2) > 1);
+		fs.mkdirSync('basebin/'+idx);
+		fs.renameSync(`${res.id}/${idx}/${dzLevels - l}`, `basebin/${idx}/${dzLevels - l}`);
+	}
 
 	fs.rmSync(res.id, {recursive: true, force: true});
 	fs.rmSync(res.id+'.dzi');
+
+	log('OK', pos, true);
 }
 
 function log(str, pos, newLine) {
 	process.stdout.cursorTo(pos);
 	process.stdout.clearLine(1);
 	process.stdout.write(' | ' + str + (newLine ? '\n' : '\r'));
+}
+
+function generateMDP(images) {
+	const enc = new TextEncoder();
+	const arr = [];
+	images.forEach(i => {
+		if(!i.buffer || !i.path) return;
+		const name = enc.encode(i.path); // byte[20]
+		const size = i.buffer.byteLength.toString(8); // byte[12]
+		arr.push(name, new Uint8Array(20 - name.byteLength));
+		arr.push(enc.encode('0'.repeat(12 - size.length)+size));
+		arr.push(i.buffer);
+	});
+
+	return new Blob(arr, {type: 'application/octet-stream'});
 }
