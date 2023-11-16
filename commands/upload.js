@@ -59,7 +59,7 @@ async function handle(f, folder, pos) {
 	if(!fs.existsSync(f)) throw new Error(`File '${f}' not found`);
 
 	const res = await api(`/api/cli${folder}/create?f=${encodeURIComponent(f)}`);
-	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions?');
+	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions? Note: if your account has custom cloud hosting, this CLI tool cannot be used.');
 
 	log('Processing...', pos);
 	execSync(`vips dzsave ${f}[0] ${res.id} --layout dz --tile-size 1024 --overlap 0 --suffix .webp[Q=85] --strip`);
