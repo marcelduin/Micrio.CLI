@@ -1,6 +1,6 @@
 #! /usr/bin/env node
 
-import { program } from 'commander';
+import { program, Option } from 'commander';
 import { login } from './commands/login.js';
 import chalk from 'chalk';
 import { conf } from './lib/store.js';
@@ -35,8 +35,9 @@ program.command('logout')
 
 program.command('upload')
 	.description('Upload your images to the Micrio dashboard')
-	.argument('<files>', 'One or more image files')
-	.requiredOption('-t, --target <url>', 'The Micrio dashboard url of the target folder')
+	.argument('<files>', 'One or more image files, wildcards supported (such as *.jpg)')
+	.requiredOption('-d, --destination <url>', 'The Micrio dashboard destination folder URL')
+	.addOption(new Option('-f, --format <format>', 'Tile format').choices(['webp', 'jpg']).default('webp'))
 	.action(upload);
 
 program.parse();

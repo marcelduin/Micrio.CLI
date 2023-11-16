@@ -19,7 +19,7 @@ export async function upload(attr, opts) {
 	if(!hasbin.sync('vips')) return error('Libvips not installed. Download it from https://www.libvips.org/install.html');
 
 	let url;
-	try { url = new URL(opts.target) } catch(e) {
+	try { url = new URL(opts.destination) } catch(e) {
 		return error('Invalid target URL. This has to be the full URL of the target folder of the Micrio dashboard (https://dash.micr.io/...)');
 	}
 
@@ -40,11 +40,12 @@ export async function upload(attr, opts) {
 
 	for(let i=0;i<files.length;i++) try {
 		process.stdout.write(`[${(i+1+'').padStart(numLen)}/${files.length}] ${files[i]}\r`);
-		await handle(files[i], url.pathname, strLen);
+		await handle(files[i], url.pathname, opts.format, strLen);
 	} catch(e) {
 		return error(e?.message??e??'An unknown error occurred');
 	}
 
+	console.log();
 	console.log(`Succesfully uploaded ${files.length} image${files.length==1?'':'s'} in ${Math.round(Date.now()-start)/1000}s.`);
 }
 
@@ -55,14 +56,14 @@ const walkSync = (dir, callback) =>  fs.lstatSync(dir).isDirectory()
 	? fs.readdirSync(dir).map(f => walkSync(path.join(dir, f), callback))
 	: callback(dir);
 
-async function handle(f, folder, pos) {
+async function handle(f, folder, format, pos) {
 	if(!fs.existsSync(f)) throw new Error(`File '${f}' not found`);
 
 	const res = await api(`/api/cli${folder}/create?f=${encodeURIComponent(f)}`);
 	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions? Note: if your account has custom cloud hosting, this CLI tool cannot be used.');
 
 	log('Processing...', pos);
-	execSync(`vips dzsave ${f}[0] ${res.id} --layout dz --tile-size 1024 --overlap 0 --suffix .webp[Q=85] --strip`);
+	execSync(`vips dzsave ${f}[0] ${res.id} --layout dz --tile-size 1024 --overlap 0 --suffix .${format}[Q=85] --strip`);
 	fs.renameSync(res.id+'_files', res.id);
 
 	const [,height,width] = /Height\="(\d+)"\n.*Width\="(\d+)"/m.exec(fs.readFileSync(res.id+'.dzi', 'utf-8'));
@@ -97,7 +98,7 @@ async function handle(f, folder, pos) {
 	}
 
 	// Finalize
-	await api(`/api/cli${folder}/@${res.id}?w=${width}&h=${height}`);
+	await api(`/api/cli${folder}/@${res.id}?w=${width}&h=${height}&f=${format}`);
 
 	log('OK', pos, true);
 
