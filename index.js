@@ -8,11 +8,15 @@ import { upload } from './commands/upload.js';
 
 let account = conf.get('account');
 
-console.log('Micrio CLI Tool'+(account ? ' [' + chalk.whiteBright(account.email) + ']' : ''));
+console.log(chalk.hex('#c5ff5b')('<> Micrio CLI Tool'));
 console.log();
+if(account) {
+	console.log(chalk.hex('#00d4ee')('Logged in as ') + chalk.whiteBright(account.email))
+	console.log();
+}
 
-program.name('Micrio CLI')
-	.description('Local image processing and uploader')
+program.name('micrio')
+	.description('Local image processing and uploader to the Micrio dashboard')
 	.version('0.1.0');
 
 program.command('login')
