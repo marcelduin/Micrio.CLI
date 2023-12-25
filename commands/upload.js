@@ -130,6 +130,9 @@ async function handle(f, folder, format, type, idx, length, pos, omniId, setOmni
 		}).then(() => delete running[tile]);
 	}
 
+	// Finish remaining
+	await Promise.all(Object.values(running));
+
 	// Finalize
 	if(!omniId) {
 		await api(`/api/cli${folder}/@${res.id}?w=${width}&h=${height}&f=${format}&l=${length}`);

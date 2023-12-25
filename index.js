@@ -20,11 +20,11 @@ program.name('micrio')
 	.version('0.1.0');
 
 program.command('login')
-	.description('Connect to your current Micrio session')
+	.description('connect to your current Micrio session')
 	.action(login);
 
 program.command('logout')
-	.description('Log out of your Micrio account for this tool')
+	.description('log out of your Micrio account for this tool')
 	.action(() => {
 		if(account) {
 			conf.delete('account');
@@ -34,11 +34,11 @@ program.command('logout')
 	});
 
 program.command('upload')
-	.description('Upload your images to the Micrio dashboard')
-	.argument('<files>', 'One or more image files, wildcards supported (such as *.jpg)')
-	.requiredOption('-d, --destination <url>', 'The Micrio dashboard destination folder URL')
-	.addOption(new Option('-f, --format <format>', 'Tile format').choices(['webp', 'jpg']).default('webp'))
-	.addOption(new Option('-t, --type <type>', 'Image type').choices(['2d', 'omni', '360']).default('2d'))
+	.description('upload your images to the Micrio dashboard')
+	.argument('<files>', 'one or more image files, wildcards supported (such as *.jpg)')
+	.requiredOption('-d, --destination <url>', 'the Micrio dashboard destination folder URL')
+	.addOption(new Option('-f, --format <format>', 'tile format').choices(['webp', 'jpg']).default('webp'))
+	.addOption(new Option('-t, --type <type>', 'image type').choices(['2d', '360', 'omni']).default('2d'))
 	.action(upload);
 
 program.parse();
