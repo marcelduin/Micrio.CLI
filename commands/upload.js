@@ -15,6 +15,7 @@ const api = (path) => fetch(urlDashBase+path,{
 });
 
 const error = (str) => console.log(chalk.red('Error: ') + str);
+const sanitize = (f, outDir) => f.replace(/\\+/g,'/').replace(outDir+'/','');
 
 export async function upload(attr, opts) {
 	if(!account?.email) return error(`Not logged in. Run 'micrio login' first`);
@@ -25,6 +26,8 @@ export async function upload(attr, opts) {
 	try { url = new URL(opts.destination) } catch(e) {
 		return error('Invalid target URL. This has to be the full URL of the target folder of the Micrio dashboard (https://dash.micr.io/...)');
 	}
+
+	const folder = url.pathname;
 
 	const start = Date.now();
 
@@ -48,8 +51,7 @@ export async function upload(attr, opts) {
 	let omniId;
 
 	for(let i=0;i<files.length;i++) try {
-		process.stdout.write(`[${(i+1+'').padStart(numLen)}/${files.length}] ${files[i]}\r`);
-		await handle(files[i], outDir, url.pathname, opts.format, opts.type, i, files.length, strLen, omniId, id => omniId = id);
+		await handle(files[i], outDir, folder, opts.format, opts.type, i, files.length, strLen, omniId, id => omniId = id);
 	} catch(e) {
 		return error(e?.message??e??'An unknown error occurred');
 	}
@@ -75,10 +77,42 @@ export async function upload(attr, opts) {
 		console.log('Done.');
 	}
 
+	const allTiles = [];
+	const uploadUris = [];
+	walkSync(outDir, t => allTiles.push(t));
+	const total = allTiles.length;
+	let count = 0;
+	const running = {};
+
+	async function getUploadUris() {
+		const files = allTiles.slice(0, SIGNED_URIS);
+		if(files.length) uploadUris.push(...await api(`/api/${folder.split('/')[1]}/store?f=${files.map(f => sanitize(f, outDir)).join(',')}`).then(r => {
+			if(!r) throw new Error('Upload permission denied.');
+			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${sanitize(files[i], outDir)}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
+		}));
+	}
+
+	while(allTiles.length) {
+		const queue = Object.values(running);
+		if(queue.length >= UPLOAD_THREADS) await Promise.any(queue);
+		if(!uploadUris.length) await getUploadUris();
+
+		const tile = allTiles.shift();
+		log(`Uploading ${++count} / ${total}...`, 0);
+		running[tile] = fetch(uploadUris.shift(), {
+			method: 'PUT',
+			body: new Blob([fs.readFileSync(tile)], {type: `image/${opts.format}`}),
+			headers: { 'Content-Type': `image/${opts.format}` }
+		}).then(() => delete running[tile]);
+	}
+
+	// Finish remaining
+	await Promise.all(Object.values(running));
+
 	fs.rmSync(outDir, {recursive: true, force: true});
 
+	log(`Succesfully uploaded ${files.length} image${files.length==1?'':'s'} in ${Math.round(Date.now()-start)/1000}s.`, 0);
 	console.log();
-	console.log(`Succesfully uploaded ${files.length} image${files.length==1?'':'s'} in ${Math.round(Date.now()-start)/1000}s.`);
 }
 
 const SIGNED_URIS = 20;
@@ -94,7 +128,7 @@ async function handle(f, outDir, folder, format, type, idx, length, pos, omniId,
 	const res = omniId ? {id: omniId} : await api(`/api/cli${folder}/create?f=${encodeURIComponent(f)}&t=${type}`);
 	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions?');
 
-	log('Processing...', pos);
+	log(`Processing ${idx+1} / ${length}...`, 0);
 	execSync(`vips dzsave ${f}[0] ${outDir}/${res.id} --layout dz --tile-size 1024 --overlap 0 --suffix .${format}[Q=${format == 'webp' ? '75' : '85'}] --strip`);
 
 	const isOmni = type=='omni';
@@ -106,40 +140,6 @@ async function handle(f, outDir, folder, format, type, idx, length, pos, omniId,
 	else fs.renameSync(outDir + '/' + res.id+'_files', outDir+'/'+res.id);
 
 	const [,height,width] = /Height\="(\d+)"\n.*Width\="(\d+)"/m.exec(fs.readFileSync(outDir+'/'+res.id+'.dzi', 'utf-8'));
-
-	const tiles = [];
-	const uploadUris = [];
-	walkSync(outDir+'/'+res.id, t => tiles.push(t));
-
-	const sanitize = (f) => f.replace(/\\+/g,'/').replace(outDir+'/','');
-
-	async function getUploadUris() {
-		const files = tiles.slice(0, SIGNED_URIS);
-		if(files.length) uploadUris.push(...await api(`/api/${folder.split('/')[1]}/store?f=${files.map(sanitize).join(',')}`).then(r => {
-			if(!r) throw new Error('Upload permission denied.');
-			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${sanitize(files[i])}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
-		}));
-	}
-
-	const total = tiles.length;
-	let count = 0;
-	const running = {};
-
-	while(tiles.length) {
-		const queue = Object.values(running);
-		if(queue.length >= UPLOAD_THREADS) await Promise.any(queue);
-		if(!uploadUris.length) await getUploadUris();
-		log(`Uploading ${++count} / ${total}...`, pos);
-		const tile = tiles.shift();
-		running[tile] = fetch(uploadUris.shift(), {
-			method: 'PUT',
-			body: new Blob([fs.readFileSync(tile)], {type: `image/${format}`}),
-			headers: { 'Content-Type': `image/${format}` }
-		}).then(() => delete running[tile]);
-	}
-
-	// Finish remaining
-	await Promise.all(Object.values(running));
 
 	// Finalize
 	if(!omniId) {
@@ -158,14 +158,15 @@ async function handle(f, outDir, folder, format, type, idx, length, pos, omniId,
 	}
 
 	fs.rmSync(outDir+'/'+res.id+'.dzi');
-
-	log('OK', pos, true);
 }
 
 function log(str, pos, newLine) {
-	process.stdout.cursorTo(pos);
-	process.stdout.clearLine(1);
-	process.stdout.write(' | ' + str + (newLine ? '\n' : '\r'));
+	if(!newLine) newLine = pos == undefined;
+	if(!newLine) {
+		process.stdout.cursorTo(pos ?? 0);
+		process.stdout.clearLine(1);
+	}
+	process.stdout.write((pos?' | ':'') + str + (newLine ? '\n' : '\r'));
 }
 
 function generateMDP(images) {
