@@ -38,6 +38,10 @@ export async function upload(attr, opts) {
 
 	if(!files.length) return error('No images to process');
 
+	const outDir = '_micrio_'+Math.floor(Math.random()*10000000);
+
+	if(!fs.existsSync(outDir)) fs.mkdirSync(outDir);
+
 	const numLen = (files.length+'').length;
 	const strLen = 4 + numLen * 2 + Math.max(...files.map(f => f.length));
 
@@ -45,7 +49,7 @@ export async function upload(attr, opts) {
 
 	for(let i=0;i<files.length;i++) try {
 		process.stdout.write(`[${(i+1+'').padStart(numLen)}/${files.length}] ${files[i]}\r`);
-		await handle(files[i], url.pathname, opts.format, opts.type, i, files.length, strLen, omniId, id => omniId = id);
+		await handle(files[i], outDir, url.pathname, opts.format, opts.type, i, files.length, strLen, omniId, id => omniId = id);
 	} catch(e) {
 		return error(e?.message??e??'An unknown error occurred');
 	}
@@ -71,6 +75,8 @@ export async function upload(attr, opts) {
 		console.log('Done.');
 	}
 
+	fs.rmSync(outDir, {recursive: true, force: true});
+
 	console.log();
 	console.log(`Succesfully uploaded ${files.length} image${files.length==1?'':'s'} in ${Math.round(Date.now()-start)/1000}s.`);
 }
@@ -82,34 +88,36 @@ const walkSync = (dir, callback) =>  fs.lstatSync(dir).isDirectory()
 	? fs.readdirSync(dir).map(f => walkSync(path.join(dir, f), callback))
 	: callback(dir);
 
-async function handle(f, folder, format, type, idx, length, pos, omniId, setOmniId) {
+async function handle(f, outDir, folder, format, type, idx, length, pos, omniId, setOmniId) {
 	if(!fs.existsSync(f)) throw new Error(`File '${f}' not found`);
 
 	const res = omniId ? {id: omniId} : await api(`/api/cli${folder}/create?f=${encodeURIComponent(f)}&t=${type}`);
 	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions?');
 
 	log('Processing...', pos);
-	execSync(`vips dzsave ${f}[0] ${res.id} --layout dz --tile-size 1024 --overlap 0 --suffix .${format}[Q=85] --strip`);
+	execSync(`vips dzsave ${f}[0] ${outDir}/${res.id} --layout dz --tile-size 1024 --overlap 0 --suffix .${format}[Q=${format == 'webp' ? '75' : '85'}] --strip`);
 
 	const isOmni = type=='omni';
 	if(isOmni) {
-		if(!omniId) setOmniId(res.id);
-		fs.mkdirSync(res.id);
-		fs.renameSync(res.id+'_files', res.id+'/'+idx);
+		if(!omniId) setOmniId(outDir + '/' + res.id);
+		fs.mkdirSync(outDir + '/' + res.id);
+		fs.renameSync(outDir + '/' + res.id+'_files', outDir+'/'+res.id+'/'+idx);
 	}
-	else fs.renameSync(res.id+'_files', res.id);
+	else fs.renameSync(outDir + '/' + res.id+'_files', outDir+'/'+res.id);
 
-	const [,height,width] = /Height\="(\d+)"\n.*Width\="(\d+)"/m.exec(fs.readFileSync(res.id+'.dzi', 'utf-8'));
+	const [,height,width] = /Height\="(\d+)"\n.*Width\="(\d+)"/m.exec(fs.readFileSync(outDir+'/'+res.id+'.dzi', 'utf-8'));
 
 	const tiles = [];
 	const uploadUris = [];
-	walkSync(res.id, t => tiles.push(t));
+	walkSync(outDir+'/'+res.id, t => tiles.push(t));
+
+	const sanitize = (f) => f.replace(/\\+/g,'/').replace(outDir+'/','');
 
 	async function getUploadUris() {
 		const files = tiles.slice(0, SIGNED_URIS);
-		if(files.length) uploadUris.push(...await api(`/api/${folder.split('/')[1]}/store?f=${files.map(f => f.replace(/\\/g,'/')).join(',')}`).then(r => {
+		if(files.length) uploadUris.push(...await api(`/api/${folder.split('/')[1]}/store?f=${files.map(sanitize).join(',')}`).then(r => {
 			if(!r) throw new Error('Upload permission denied.');
-			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${files[i]}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
+			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${sanitize(files[i])}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
 		}));
 	}
 
@@ -136,7 +144,7 @@ async function handle(f, folder, format, type, idx, length, pos, omniId, setOmni
 	// Finalize
 	if(!omniId) {
 		await api(`/api/cli${folder}/@${res.id}?w=${width}&h=${height}&f=${format}&l=${length}`);
-		fs.mkdirSync('basebin');
+		if(isOmni && !fs.existsSync('basebin')) fs.mkdirSync('basebin');
 	}
 
 	// Move tile for base.bin generation
@@ -146,11 +154,10 @@ async function handle(f, folder, format, type, idx, length, pos, omniId, setOmni
 		let dzLevels = 0, max = Math.max(width, height);
 		do dzLevels++; while ((max /= 2) > 1);
 		fs.mkdirSync('basebin/'+idx);
-		fs.renameSync(`${res.id}/${idx}/${dzLevels - l}`, `basebin/${idx}/${dzLevels - l}`);
+		fs.renameSync(`${outDir}/${res.id}/${idx}/${dzLevels - l}`, `basebin/${idx}/${dzLevels - l}`);
 	}
 
-	fs.rmSync(res.id, {recursive: true, force: true});
-	fs.rmSync(res.id+'.dzi');
+	fs.rmSync(outDir+'/'+res.id+'.dzi');
 
 	log('OK', pos, true);
 }
