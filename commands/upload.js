@@ -5,10 +5,19 @@ import chalk from 'chalk';
 import { execSync } from 'child_process';
 import path from 'path';
 
+const SIGNED_URIS = 100;
+const UPLOAD_THREADS = 20;
+const PROCESSING_THREADS = 8;
+
 const account = conf.get('account');
 
-const api = (path) => fetch(urlDashBase+path,{
-	headers: { Cookie: `.AspNetCore.Identity.Application=${account.base64};`}
+const api = (path, data) => fetch(urlDashBase+path,{
+	method: data ? 'POST' : 'GET',
+	headers: {
+		Cookie: `.AspNetCore.Identity.Application=${account.base64};`,
+		'Content-Type': data ? 'application/json' : undefined
+	},
+	body: data ? JSON.stringify(data) : undefined
 }).then(r => r?.json(), () => undefined).then(r => {
 	if(r?.error) throw new Error(r.error);
 	return r;
@@ -45,16 +54,21 @@ export async function upload(attr, opts) {
 
 	if(!fs.existsSync(outDir)) fs.mkdirSync(outDir);
 
-	const numLen = (files.length+'').length;
-	const strLen = 4 + numLen * 2 + Math.max(...files.map(f => f.length));
-
 	let omniId;
 
+	const hQueue = {};
 	for(let i=0;i<files.length;i++) try {
-		await handle(files[i], outDir, folder, opts.format, opts.type, i, files.length, strLen, omniId, id => omniId = id);
+		const queue = Object.values(hQueue);
+		if(queue.length >= PROCESSING_THREADS) await Promise.any(queue);
+		const f = files[i];
+		log(`Processing ${i+1} / ${files.length}...`, 0);
+		hQueue[f] = handle(f, outDir, folder, opts.format, opts.type, i, files.length, omniId, id => omniId = id)
+			.then(() => delete hQueue[f]);
 	} catch(e) {
 		return error(e?.message??e??'An unknown error occurred');
 	}
+
+	await Promise.all(Object.values(hQueue));
 
 	if(omniId) {
 		console.log('Creating optimized viewing package...');
@@ -77,58 +91,22 @@ export async function upload(attr, opts) {
 		console.log('Done.');
 	}
 
-	const allTiles = [];
-	const uploadUris = [];
-	walkSync(outDir, t => allTiles.push(t));
-	const total = allTiles.length;
-	let count = 0;
-	const running = {};
-
-	async function getUploadUris() {
-		const files = allTiles.slice(0, SIGNED_URIS);
-		if(files.length) uploadUris.push(...await api(`/api/${folder.split('/')[1]}/store?f=${files.map(f => sanitize(f, outDir)).join(',')}`).then(r => {
-			if(!r) throw new Error('Upload permission denied.');
-			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${sanitize(files[i], outDir)}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
-		}));
-	}
-
-	while(allTiles.length) {
-		const queue = Object.values(running);
-		if(queue.length >= UPLOAD_THREADS) await Promise.any(queue);
-		if(!uploadUris.length) await getUploadUris();
-
-		const tile = allTiles.shift();
-		log(`Uploading ${++count} / ${total}...`, 0);
-		running[tile] = fetch(uploadUris.shift(), {
-			method: 'PUT',
-			body: new Blob([fs.readFileSync(tile)], {type: `image/${opts.format}`}),
-			headers: { 'Content-Type': `image/${opts.format}` }
-		}).then(() => delete running[tile]);
-	}
-
-	// Finish remaining
-	await Promise.all(Object.values(running));
-
 	fs.rmSync(outDir, {recursive: true, force: true});
 
 	log(`Succesfully uploaded ${files.length} image${files.length==1?'':'s'} in ${Math.round(Date.now()-start)/1000}s.`, 0);
 	console.log();
 }
 
-const SIGNED_URIS = 20;
-const UPLOAD_THREADS = 10;
-
 const walkSync = (dir, callback) =>  fs.lstatSync(dir).isDirectory()
 	? fs.readdirSync(dir).map(f => walkSync(path.join(dir, f), callback))
 	: callback(dir);
 
-async function handle(f, outDir, folder, format, type, idx, length, pos, omniId, setOmniId) {
+async function handle(f, outDir, folder, format, type, idx, length, omniId, setOmniId) {
 	if(!fs.existsSync(f)) throw new Error(`File '${f}' not found`);
 
-	const res = omniId ? {id: omniId} : await api(`/api/cli${folder}/create?f=${encodeURIComponent(f)}&t=${type}`);
+	const res = omniId ? {id: omniId} : await api(`/api/cli${folder}/create?f=${encodeURIComponent(f)}&t=${type}&f=${format}`);
 	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions?');
 
-	log(`Processing ${idx+1} / ${length}...`, 0);
 	execSync(`vips dzsave ${f}[0] ${outDir}/${res.id} --layout dz --tile-size 1024 --overlap 0 --suffix .${format}[Q=${format == 'webp' ? '75' : '85'}] --strip`);
 
 	const isOmni = type=='omni';
@@ -141,14 +119,41 @@ async function handle(f, outDir, folder, format, type, idx, length, pos, omniId,
 
 	const [,height,width] = /Height\="(\d+)"\n.*Width\="(\d+)"/m.exec(fs.readFileSync(outDir+'/'+res.id+'.dzi', 'utf-8'));
 
-	// Finalize
-	if(!omniId) {
-		await api(`/api/cli${folder}/@${res.id}?w=${width}&h=${height}&f=${format}&l=${length}`);
-		if(isOmni && !fs.existsSync('basebin')) fs.mkdirSync('basebin');
+	const allTiles = [];
+	const uploadUris = [];
+	walkSync(outDir+'/'+res.id, t => allTiles.push(t));
+	const running = {};
+
+	async function getUploadUris() {
+		const files = allTiles.slice(0, SIGNED_URIS);
+		if(files.length) uploadUris.push(...await api(`/api/${folder.split('/')[1]}/store`, {files : files.map(f => sanitize(f, outDir))}).then(r => {
+			if(!r) throw new Error('Upload permission denied.');
+			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${sanitize(files[i], outDir)}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
+		}));
 	}
+
+	while(allTiles.length) {
+		const queue = Object.values(running);
+		if(queue.length >= UPLOAD_THREADS) await Promise.any(queue);
+		if(!uploadUris.length) await getUploadUris();
+
+		const tile = allTiles.shift();
+		running[tile] = fetch(uploadUris.shift(), {
+			method: 'PUT',
+			body: new Blob([fs.readFileSync(tile)], {type: `image/${format}`}),
+			headers: { 'Content-Type': `image/${format}` }
+		}).then(() => delete running[tile]);
+	}
+
+	// Finish remaining
+	await Promise.all(Object.values(running));
+
+	// Finalize
+	if(!omniId) await api(`/api/cli${folder}/@${res.id}?w=${width}&h=${height}&f=${format}&l=${length}`);
 
 	// Move tile for base.bin generation
 	if(isOmni) {
+		if(!omniId && !fs.existsSync('basebin')) fs.mkdirSync('basebin');
 		let d = Math.max(width, height), l = 0;
 		while(d > 1024) { d /= 2; l++; }
 		let dzLevels = 0, max = Math.max(width, height);
