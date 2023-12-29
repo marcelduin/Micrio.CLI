@@ -38,6 +38,7 @@ program.command('upload')
 	.requiredOption('-d, --destination <url>', 'the Micrio dashboard destination folder URL')
 	.addOption(new Option('-f, --format <format>', 'tile format').choices(['webp', 'jpg']).default('webp'))
 	.addOption(new Option('-t, --type <type>', 'image type').choices(['2d', '360', 'omni']).default('2d'))
+	.addOption(new Option('--dpi <dpi>', 'PDF DPI').default('150'))
 	.action(upload);
 
 program.parse();

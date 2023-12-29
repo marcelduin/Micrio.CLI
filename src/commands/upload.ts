@@ -33,11 +33,12 @@ interface R2StoreResult {
 	keys: string[];
 };
 
-export async function upload(filesAttr:string, opts:{
+export async function upload(ignore:any, opts:{
 	destination: string;
 	format: string;
 	type: string;
-}) {
+	dpi: string;
+}, o:{args: string[]}) {
 	if(!account?.email) return error(`Not logged in. Run 'micrio login' first`);
 
 	if(!hasbin.sync('vips')) return error('Libvips not installed. Download it from https://www.libvips.org/install.html');
@@ -52,7 +53,7 @@ export async function upload(filesAttr:string, opts:{
 	const start = Date.now();
 
 	const allFiles = fs.readdirSync('.').filter(f => !fs.lstatSync(f).isDirectory());
-	let files = filesAttr.split(' ').map(f => {
+	let files = o.args.map(f => {
 		if(!/\*/.test(f)) return [f]
 		const rx = new RegExp(f.replace(/\./g,'\\.').replace(/\*/g,'.+'), 'i');
 		return allFiles.filter(f => rx.test(f));
@@ -61,11 +62,23 @@ export async function upload(filesAttr:string, opts:{
 
 	if(!files.length) return error('No images to process');
 
+	const origImageNum = files.length;
+
 	const outDir = '_micrio_'+Math.floor(Math.random()*10000000);
 
 	if(!fs.existsSync(outDir)) fs.mkdirSync(outDir);
 
 	let omniId:string|undefined;
+
+	for(let i=0;i<files.length;i++) { const f = files[i]; if(f.endsWith('.pdf')) try {
+		const info = GETPDFInfo(f);
+		files.splice(i--, 1);
+		for(let p=0;p<info.pages;p++) files.push(f+'.'+(p+1).toString().padStart(4, '0'));
+		i+=info.pages;
+	} catch(e) {
+		/** @ts-ignore */
+		return error(e?.['message']??e??'An unknown error occurred');
+	}}
 
 	const hQueue:{[key:string]:Promise<any>} = {};
 	for(let i=0;i<files.length;i++) try {
@@ -73,8 +86,9 @@ export async function upload(filesAttr:string, opts:{
 		if(queue.length >= PROCESSING_THREADS) await Promise.any(queue);
 		const f = files[i];
 		log(`Processing ${i+1} / ${files.length}...`, 0);
-		hQueue[f] = handle(f, outDir, folder, opts.format, opts.type, i, files.length, omniId, id => omniId = id)
-			.then(() => delete hQueue[f]);
+		hQueue[f] = handle(f, outDir, folder, opts.format, opts.type, i, files.length, omniId, id => omniId = id, {
+			pdfDpi: opts.dpi
+		}).then(() => delete hQueue[f]);
 	} catch(e) {
 		/** @ts-ignore */
 		return error(e?.['message']??e??'An unknown error occurred');
@@ -108,13 +122,15 @@ export async function upload(filesAttr:string, opts:{
 
 	fs.rmSync(outDir, {recursive: true, force: true});
 
-	log(`Succesfully uploaded ${files.length} image${files.length==1?'':'s'} in ${Math.round(Date.now()-start)/1000}s.`, 0);
+	log(`Succesfully uploaded ${origImageNum} image${origImageNum==1?'':'s'} in ${Math.round(Date.now()-start)/1000}s.`, 0);
 	console.log();
 }
 
 const walkSync = (dir:string, callback:(s:string)=>void) : void => fs.lstatSync(dir).isDirectory()
 	? fs.readdirSync(dir).forEach(f => walkSync(path.join(dir, f), callback))
 	: callback(dir);
+
+const pdfPageRx = /^(.*\.pdf)\.(\d+)$/;
 
 async function handle(
 	f:string,
@@ -125,16 +141,30 @@ async function handle(
 	idx:number,
 	total:number,
 	omniId:string|undefined,
-	setOmniId:(i:string)=>void
+	setOmniId:(i:string)=>void,
+	opts: {
+		pdfDpi?: number|string
+	} = {}
 ) {
+	const isPdfPage = pdfPageRx.test(f);
+	if(isPdfPage) {
+		const basePdf = f.match(pdfPageRx)![1], pdfPage = Number(f.match(pdfPageRx)![2])-1;
+		f+='.tif';
+		execSync(`vips pdfload ${basePdf} --page=${pdfPage} --dpi=${opts.pdfDpi??'150'} ${f}`);
+	}
+
 	if(!fs.existsSync(f)) throw new Error(`File '${f}' not found`);
 
-	const res = omniId ? {id: omniId} : await api<{id:string}>(`/api/cli${folder}/create?f=${encodeURIComponent(f)}&t=${type}&f=${format}`);
+	const fName = isPdfPage ? f.replace(/\.tif$/,'') : f;
+
+	const res = omniId ? {id: omniId} : await api<{id:string}>(`/api/cli${folder}/create?f=${encodeURIComponent(fName)}&t=${type}&f=${format}`);
 	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions?');
 
 	const baseDir = outDir+'/'+res.id;
 
 	execSync(`vips dzsave ${f}[0] ${baseDir} --layout dz --tile-size 1024 --overlap 0 --suffix .${format}[Q=${format == 'webp' ? '75' : '85'}] --strip`);
+
+	if(isPdfPage) fs.rmSync(f);
 
 	const isOmni = type=='omni';
 	if(isOmni) {
@@ -220,4 +250,19 @@ function generateMDP(images:{
 	});
 
 	return new Blob(arr, {type: 'application/octet-stream'});
+}
+
+function GETPDFInfo(file:string) : {
+	width: number;
+	height: number;
+	pages: number;
+} {
+	const r = new TextDecoder().decode(execSync(`vipsheader -a ${file}`));
+	const width = Number(r.match(/width: (\d+)/m)?.[1]),
+		height = Number(r.match(/height: (\d+)/m)?.[1]),
+		pages = Number(r.match(/(pdf-n_pages|n-pages): (\d+)/m)?.[2]);
+
+	if(!width || !height || !pages) throw new Error('Invalid PDF file');
+
+	return { width, height, pages };
 }
