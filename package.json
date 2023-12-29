@@ -4,7 +4,10 @@
 	"description": "Command-line tool for processing and uploading images to Micrio",
 	"type": "module",
 	"bin": {
-		"micrio": "./index.js"
+		"micrio": "./dist/index.js"
+	},
+	"scripts": {
+		"build": "npx tsc"
 	},
 	"keywords": [
 		"micrio",
@@ -14,9 +17,13 @@
 	"license": "MIT OR Apache-2.0",
 	"author": "Marcel Duin <marcel@micr.io>",
 	"dependencies": {
-		"chalk": "^5.3.0",
 		"commander": "^11.1.0",
 		"conf": "^12.0.0",
 		"hasbin": "^1.2.3"
+	},
+	"devDependencies": {
+		"@types/hasbin": "^1.2.2",
+		"@types/node": "^20.10.5",
+		"typescript": "^5.3.3"
 	}
 }

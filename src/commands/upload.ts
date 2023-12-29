@@ -1,32 +1,43 @@
 import fs from 'fs';
 import hasbin from 'hasbin';
-import { urlDashBase, conf } from '../lib/store.js';
-import chalk from 'chalk';
 import { execSync } from 'child_process';
 import path from 'path';
+import { urlDashBase, conf } from '../lib/store.js';
+import { UserToken } from './login.js';
 
 const SIGNED_URIS = 100;
 const UPLOAD_THREADS = 20;
 const PROCESSING_THREADS = 8;
 
-const account = conf.get('account');
+const account = conf.get('account') as UserToken;
 
-const api = (path, data) => fetch(urlDashBase+path,{
+const api = <T>(path:string, data?:Object) : Promise<T> => fetch(urlDashBase+path,{
 	method: data ? 'POST' : 'GET',
-	headers: {
-		Cookie: `.AspNetCore.Identity.Application=${account.base64};`,
-		'Content-Type': data ? 'application/json' : undefined
-	},
+	headers: Object.fromEntries([
+		['Cookie', `.AspNetCore.Identity.Application=${account.base64};`],
+		...(data ? [['Content-Type', 'application/json']] : [])
+	]),
 	body: data ? JSON.stringify(data) : undefined
 }).then(r => r?.json(), () => undefined).then(r => {
 	if(r?.error) throw new Error(r.error);
 	return r;
 });
 
-const error = (str) => console.log(chalk.red('Error: ') + str);
-const sanitize = (f, outDir) => f.replace(/\\+/g,'/').replace(outDir+'/','');
+const error = (str:string) : void => console.log('Error: ' + str);
+const sanitize = (f:string, outDir:string) : string => f.replace(/\\+/g,'/').replace(outDir+'/','');
 
-export async function upload(attr, opts) {
+interface R2StoreResult {
+	time: string;
+	key: string;
+	account: string;
+	keys: string[];
+};
+
+export async function upload(filesAttr:string, opts:{
+	destination: string;
+	format: string;
+	type: string;
+}) {
 	if(!account?.email) return error(`Not logged in. Run 'micrio login' first`);
 
 	if(!hasbin.sync('vips')) return error('Libvips not installed. Download it from https://www.libvips.org/install.html');
@@ -41,7 +52,7 @@ export async function upload(attr, opts) {
 	const start = Date.now();
 
 	const allFiles = fs.readdirSync('.').filter(f => !fs.lstatSync(f).isDirectory());
-	let files = attr.split(' ').map(f => {
+	let files = filesAttr.split(' ').map(f => {
 		if(!/\*/.test(f)) return [f]
 		const rx = new RegExp(f.replace(/\./g,'\\.').replace(/\*/g,'.+'), 'i');
 		return allFiles.filter(f => rx.test(f));
@@ -54,9 +65,9 @@ export async function upload(attr, opts) {
 
 	if(!fs.existsSync(outDir)) fs.mkdirSync(outDir);
 
-	let omniId;
+	let omniId:string|undefined;
 
-	const hQueue = {};
+	const hQueue:{[key:string]:Promise<any>} = {};
 	for(let i=0;i<files.length;i++) try {
 		const queue = Object.values(hQueue);
 		if(queue.length >= PROCESSING_THREADS) await Promise.any(queue);
@@ -65,20 +76,24 @@ export async function upload(attr, opts) {
 		hQueue[f] = handle(f, outDir, folder, opts.format, opts.type, i, files.length, omniId, id => omniId = id)
 			.then(() => delete hQueue[f]);
 	} catch(e) {
-		return error(e?.message??e??'An unknown error occurred');
+		/** @ts-ignore */
+		return error(e?.['message']??e??'An unknown error occurred');
 	}
 
 	await Promise.all(Object.values(hQueue));
 
 	if(omniId) {
 		console.log('Creating optimized viewing package...');
-		const tiles = [];
+		const tiles:{
+			path: string;
+			buffer: Buffer;
+		}[] = [];
 		walkSync('basebin', t => tiles.push({
 			path: t.replace(/\\/g,'/').replace('basebin/',''),
 			buffer: fs.readFileSync(t)
 		}));
 		const path = `${omniId}/base.bin`;
-		const postUri = await api(`/api/${url.pathname.split('/')[1]}/store?f=${path}`).then(r => {
+		const postUri = await api<R2StoreResult>(`/api/${url.pathname.split('/')[1]}/store?f=${path}`).then(r => {
 			if(!r) throw new Error('Upload permission denied.');
 			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${path}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
 		});
@@ -97,14 +112,14 @@ export async function upload(attr, opts) {
 	console.log();
 }
 
-const walkSync = (dir, callback) =>  fs.lstatSync(dir).isDirectory()
-	? fs.readdirSync(dir).map(f => walkSync(path.join(dir, f), callback))
+const walkSync = (dir:string, callback:(s:string)=>void) : void => fs.lstatSync(dir).isDirectory()
+	? fs.readdirSync(dir).forEach(f => walkSync(path.join(dir, f), callback))
 	: callback(dir);
 
-async function handle(f, outDir, folder, format, type, idx, length, omniId, setOmniId) {
+async function handle(f:string, outDir:string, folder:string, format:string, type:string, idx:number, total:number, omniId:string|undefined, setOmniId:(i:string)=>void) {
 	if(!fs.existsSync(f)) throw new Error(`File '${f}' not found`);
 
-	const res = omniId ? {id: omniId} : await api(`/api/cli${folder}/create?f=${encodeURIComponent(f)}&t=${type}&f=${format}`);
+	const res = omniId ? {id: omniId} : await api<{id:string}>(`/api/cli${folder}/create?f=${encodeURIComponent(f)}&t=${type}&f=${format}`);
 	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions?');
 
 	execSync(`vips dzsave ${f}[0] ${outDir}/${res.id} --layout dz --tile-size 1024 --overlap 0 --suffix .${format}[Q=${format == 'webp' ? '75' : '85'}] --strip`);
@@ -117,16 +132,18 @@ async function handle(f, outDir, folder, format, type, idx, length, omniId, setO
 	}
 	else fs.renameSync(outDir + '/' + res.id+'_files', outDir+'/'+res.id);
 
-	const [,height,width] = /Height\="(\d+)"\n.*Width\="(\d+)"/m.exec(fs.readFileSync(outDir+'/'+res.id+'.dzi', 'utf-8'));
+	const [height,width] = (/Height\="(\d+)"\n.*Width\="(\d+)"/m.exec(fs.readFileSync(outDir+'/'+res.id+'.dzi', 'utf-8')) ?? [0,0,0] as [any, number, number])
+		.slice(1).map(Number);
+	if(!height || !width) throw new Error('Could not read image dimensions');
 
-	const allTiles = [];
-	const uploadUris = [];
+	const allTiles:string[] = [];
+	const uploadUris:string[] = [];
 	walkSync(outDir+'/'+res.id, t => allTiles.push(t));
-	const running = {};
+	const running:{[key:string]:Promise<any>} = {};
 
 	async function getUploadUris() {
 		const files = allTiles.slice(0, SIGNED_URIS);
-		if(files.length) uploadUris.push(...await api(`/api/${folder.split('/')[1]}/store`, {files : files.map(f => sanitize(f, outDir))}).then(r => {
+		if(files.length) uploadUris.push(...await api<R2StoreResult>(`/api/${folder.split('/')[1]}/store`, {files : files.map(f => sanitize(f, outDir))}).then(r => {
 			if(!r) throw new Error('Upload permission denied.');
 			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${sanitize(files[i], outDir)}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
 		}));
@@ -138,7 +155,8 @@ async function handle(f, outDir, folder, format, type, idx, length, omniId, setO
 		if(!uploadUris.length) await getUploadUris();
 
 		const tile = allTiles.shift();
-		running[tile] = fetch(uploadUris.shift(), {
+		if(!tile) throw new Error('Could not get tile to upload.');
+		running[tile] = fetch(uploadUris.shift()!, {
 			method: 'PUT',
 			body: new Blob([fs.readFileSync(tile)], {type: `image/${format}`}),
 			headers: { 'Content-Type': `image/${format}` }
@@ -149,7 +167,7 @@ async function handle(f, outDir, folder, format, type, idx, length, omniId, setO
 	await Promise.all(Object.values(running));
 
 	// Finalize
-	if(!omniId) await api(`/api/cli${folder}/@${res.id}?w=${width}&h=${height}&f=${format}&l=${length}`);
+	if(!omniId) await api(`/api/cli${folder}/@${res.id}?w=${width}&h=${height}&f=${format}&l=${total}`);
 
 	// Move tile for base.bin generation
 	if(isOmni) {
@@ -165,7 +183,7 @@ async function handle(f, outDir, folder, format, type, idx, length, omniId, setO
 	fs.rmSync(outDir+'/'+res.id+'.dzi');
 }
 
-function log(str, pos, newLine) {
+function log(str:string, pos:number, newLine:boolean=false) {
 	if(!newLine) newLine = pos == undefined;
 	if(!newLine) {
 		process.stdout.cursorTo(pos ?? 0);
@@ -174,9 +192,12 @@ function log(str, pos, newLine) {
 	process.stdout.write((pos?' | ':'') + str + (newLine ? '\n' : '\r'));
 }
 
-function generateMDP(images) {
+function generateMDP(images:{
+	path: string;
+	buffer: Buffer;
+}[]) {
 	const enc = new TextEncoder();
-	const arr = [];
+	const arr:Uint8Array[] = [];
 	images.forEach(i => {
 		if(!i.buffer || !i.path) return;
 		const name = enc.encode(i.path); // byte[20]

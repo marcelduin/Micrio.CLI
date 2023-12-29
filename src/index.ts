@@ -1,17 +1,16 @@
 #! /usr/bin/env node
 
 import { program, Option } from 'commander';
-import { login } from './commands/login.js';
-import chalk from 'chalk';
+import { UserToken, login } from './commands/login.js';
 import { conf } from './lib/store.js';
 import { upload } from './commands/upload.js';
 
-let account = conf.get('account');
+let account = conf.get('account') as UserToken|undefined;
 
-console.log(chalk.hex('#c5ff5b')('<> Micrio CLI Tool'));
+console.log('<> Micrio CLI Tool');
 console.log();
 if(account) {
-	console.log(chalk.hex('#00d4ee')('Logged in as ') + chalk.whiteBright(account.email))
+	console.log('Logged in as ' + account.email)
 	console.log();
 }
 
