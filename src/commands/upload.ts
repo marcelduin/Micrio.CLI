@@ -116,21 +116,33 @@ const walkSync = (dir:string, callback:(s:string)=>void) : void => fs.lstatSync(
 	? fs.readdirSync(dir).forEach(f => walkSync(path.join(dir, f), callback))
 	: callback(dir);
 
-async function handle(f:string, outDir:string, folder:string, format:string, type:string, idx:number, total:number, omniId:string|undefined, setOmniId:(i:string)=>void) {
+async function handle(
+	f:string,
+	outDir:string,
+	folder:string,
+	format:string,
+	type:string,
+	idx:number,
+	total:number,
+	omniId:string|undefined,
+	setOmniId:(i:string)=>void
+) {
 	if(!fs.existsSync(f)) throw new Error(`File '${f}' not found`);
 
 	const res = omniId ? {id: omniId} : await api<{id:string}>(`/api/cli${folder}/create?f=${encodeURIComponent(f)}&t=${type}&f=${format}`);
 	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions?');
 
-	execSync(`vips dzsave ${f}[0] ${outDir}/${res.id} --layout dz --tile-size 1024 --overlap 0 --suffix .${format}[Q=${format == 'webp' ? '75' : '85'}] --strip`);
+	const baseDir = outDir+'/'+res.id;
+
+	execSync(`vips dzsave ${f}[0] ${baseDir} --layout dz --tile-size 1024 --overlap 0 --suffix .${format}[Q=${format == 'webp' ? '75' : '85'}] --strip`);
 
 	const isOmni = type=='omni';
 	if(isOmni) {
-		if(!omniId) setOmniId(outDir + '/' + res.id);
-		fs.mkdirSync(outDir + '/' + res.id);
-		fs.renameSync(outDir + '/' + res.id+'_files', outDir+'/'+res.id+'/'+idx);
+		if(!omniId) setOmniId(res.id);
+		fs.mkdirSync(baseDir);
+		fs.renameSync(baseDir+'_files', baseDir+'/'+idx);
 	}
-	else fs.renameSync(outDir + '/' + res.id+'_files', outDir+'/'+res.id);
+	else fs.renameSync(baseDir+'_files', baseDir);
 
 	const [height,width] = (/Height\="(\d+)"\n.*Width\="(\d+)"/m.exec(fs.readFileSync(outDir+'/'+res.id+'.dzi', 'utf-8')) ?? [0,0,0] as [any, number, number])
 		.slice(1).map(Number);
@@ -138,7 +150,7 @@ async function handle(f:string, outDir:string, folder:string, format:string, typ
 
 	const allTiles:string[] = [];
 	const uploadUris:string[] = [];
-	walkSync(outDir+'/'+res.id, t => allTiles.push(t));
+	walkSync(baseDir, t => allTiles.push(t));
 	const running:{[key:string]:Promise<any>} = {};
 
 	async function getUploadUris() {
@@ -177,7 +189,7 @@ async function handle(f:string, outDir:string, folder:string, format:string, typ
 		let dzLevels = 0, max = Math.max(width, height);
 		do dzLevels++; while ((max /= 2) > 1);
 		fs.mkdirSync('basebin/'+idx);
-		fs.renameSync(`${outDir}/${res.id}/${idx}/${dzLevels - l}`, `basebin/${idx}/${dzLevels - l}`);
+		fs.renameSync(`${baseDir}/${idx}/${dzLevels - l}`, `basebin/${idx}/${dzLevels - l}`);
 	}
 
 	fs.rmSync(outDir+'/'+res.id+'.dzi');
