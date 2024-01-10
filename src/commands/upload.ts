@@ -71,7 +71,7 @@ export async function upload(ignore:any, opts:{
 	let omniId:string|undefined;
 
 	for(let i=0;i<files.length;i++) { const f = files[i]; if(f.endsWith('.pdf')) try {
-		const info = GETPDFInfo(f);
+		const info = GetPdfInfo(f);
 		files.splice(i--, 1);
 		for(let p=0;p<info.pages;p++) files.push(f+'.'+(p+1).toString().padStart(4, '0'));
 		i+=info.pages;
@@ -122,7 +122,7 @@ export async function upload(ignore:any, opts:{
 
 	fs.rmSync(outDir, {recursive: true, force: true});
 
-	log(`Succesfully uploaded ${origImageNum} image${origImageNum==1?'':'s'} in ${Math.round(Date.now()-start)/1000}s.`, 0);
+	log(`Succesfully added ${origImageNum} file${origImageNum==1?'':'s'} in ${Math.round(Date.now()-start)/1000}s.`, 0);
 	console.log();
 }
 
@@ -252,7 +252,7 @@ function generateMDP(images:{
 	return new Blob(arr, {type: 'application/octet-stream'});
 }
 
-function GETPDFInfo(file:string) : {
+function GetPdfInfo(file:string) : {
 	width: number;
 	height: number;
 	pages: number;
