@@ -1,10 +1,10 @@
 import fs from 'fs';
 import os from 'os';
-import hasbin from 'hasbin';
 import { execSync } from 'child_process';
 import path from 'path';
 import { urlDashBase, conf } from '../lib/store.js';
 import { UserToken } from './login.js';
+import sharp from 'sharp';
 
 const SIGNED_URIS = 100;
 const UPLOAD_THREADS = 20;
@@ -34,15 +34,16 @@ interface R2StoreResult {
 	keys: string[];
 };
 
+type FormatType = ('jpg'|'webp'|'png');
+type ImageType = ('2d'|'360'|'omni');
+
 export async function upload(ignore:any, opts:{
 	destination: string;
-	format: string;
-	type: string;
+	format: FormatType;
+	type: ImageType;
 	dpi: string;
 }, o:{args: string[]}) {
 	if(!account?.email) return error(`Not logged in. Run 'micrio login' first`);
-
-	if(!hasbin.sync('vips')) return error('Libvips not installed. Download it from https://www.libvips.org/install.html');
 
 	let url;
 	try { url = new URL(opts.destination) } catch(e) {
@@ -136,12 +137,35 @@ const walkSync = (dir:string, callback:(s:string)=>void) : void => fs.lstatSync(
 
 const pdfPageRx = /^(.*\.pdf)\.(\d+)$/;
 
+interface TileResult {
+	width: number;
+	height: number;
+}
+
+const tile = (destDir: string, file:string, format:FormatType) : Promise<TileResult> => new Promise((ok, err) => {
+	sharp(fs.readFileSync(file), {
+		limitInputPixels: 1E5 * 1E5,
+		unlimited: true
+	}).toFormat(format, {
+		quality: format == 'webp' ? 75 : 85
+	}).tile({
+		size: 1024,
+		overlap: 0,
+		depth: 'onepixel',
+		container: 'fs',
+		layout: 'dz'
+	}).toFile(destDir, (error:any, info?:TileResult) => {
+		if(error||!info) err(error??'Could not tile image');
+		else ok(info);
+	})
+});
+
 async function handle(
 	f:string,
 	outDir:string,
 	folder:string,
-	format:string,
-	type:string,
+	format:FormatType,
+	type:ImageType,
 	idx:number,
 	total:number,
 	omniId:string|undefined,
@@ -166,9 +190,11 @@ async function handle(
 	});
 	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions?');
 
+	outDir = sanitize(outDir,outDir)
 	const baseDir = outDir+'/'+res.id;
 
-	execSync(`vips dzsave ${f}[0] ${baseDir} --layout dz --tile-size 1024 --overlap 0 --suffix .${format}[Q=${format == 'webp' ? '75' : '85'}] --strip`);
+	const {width, height} = await tile(baseDir, f, format);
+	if(!height || !width) throw new Error('Could not read image dimensions');
 
 	if(isPdfPage) fs.rmSync(f);
 
@@ -179,10 +205,6 @@ async function handle(
 		fs.renameSync(baseDir+'_files', baseDir+'/'+idx);
 	}
 	else fs.renameSync(baseDir+'_files', baseDir);
-
-	const [height,width] = (/Height\="(\d+)"\n.*Width\="(\d+)"/m.exec(fs.readFileSync(outDir+'/'+res.id+'.dzi', 'utf-8')) ?? [0,0,0] as [any, number, number])
-		.slice(1).map(Number);
-	if(!height || !width) throw new Error('Could not read image dimensions');
 
 	// Update status
 	if(!omniId) await api(`/api/cli${folder}/@${res.id}/status`, {

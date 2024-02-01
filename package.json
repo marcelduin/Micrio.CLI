@@ -26,7 +26,7 @@
 	"dependencies": {
 		"commander": "^11.1.0",
 		"conf": "^12.0.0",
-		"hasbin": "^1.2.3"
+		"sharp": "^0.33.2"
 	},
 	"devDependencies": {
 		"@types/hasbin": "^1.2.2",

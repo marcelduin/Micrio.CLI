@@ -1,10 +1,6 @@
 
 `micrio` is a command line tool for processing and uploading images directly from your computer to the [Micrio Dashboard](https://micr.io).
 
-## Prerequisites
-
-You need to have `libvips` installed on your system, as per their [install instructions](https://www.libvips.org/install.html).
-
 ## Quick Start
 
 ```bash
