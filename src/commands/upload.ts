@@ -1,4 +1,5 @@
 import fs from 'fs';
+import os from 'os';
 import hasbin from 'hasbin';
 import { execSync } from 'child_process';
 import path from 'path';
@@ -64,8 +65,9 @@ export async function upload(ignore:any, opts:{
 
 	const origImageNum = files.length;
 
-	const outDir = '_micrio_'+Math.floor(Math.random()*10000000);
-
+	const tmpDir = path.join(os.tmpdir(), '_micrio');
+	if(!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir);
+	const outDir = path.join(tmpDir, Math.floor(Math.random()*10000000)+'');
 	if(!fs.existsSync(outDir)) fs.mkdirSync(outDir);
 
 	let omniId:string|undefined;
