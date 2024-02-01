@@ -107,7 +107,9 @@ export async function upload(ignore:any, opts:{
 			buffer: fs.readFileSync(t)
 		}));
 		const path = `${omniId}/base.bin`;
-		const postUri = await api<R2StoreResult>(`/api/${url.pathname.split('/')[1]}/store?f=${path}`).then(r => {
+		const postUri = await api<R2StoreResult>(`/api/${url.pathname.split('/')[1]}/store`, {
+			files: [path]
+		}).then(r => {
 			if(!r) throw new Error('Upload permission denied.');
 			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${path}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
 		});
@@ -157,7 +159,9 @@ async function handle(
 
 	const fName = isPdfPage ? f.replace(/\.tif$/,'') : f;
 
-	const res = omniId ? {id: omniId} : await api<{id:string}>(`/api/cli${folder}/create?f=${encodeURIComponent(fName)}&t=${type}&f=${format}`);
+	const res = omniId ? {id: omniId} : await api<{id:string}>(`/api/cli${folder}/create`,{
+		name: fName, type, format
+	});
 	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions?');
 
 	const baseDir = outDir+'/'+res.id;
@@ -177,6 +181,11 @@ async function handle(
 	const [height,width] = (/Height\="(\d+)"\n.*Width\="(\d+)"/m.exec(fs.readFileSync(outDir+'/'+res.id+'.dzi', 'utf-8')) ?? [0,0,0] as [any, number, number])
 		.slice(1).map(Number);
 	if(!height || !width) throw new Error('Could not read image dimensions');
+
+	// Update status
+	if(!omniId) await api(`/api/cli${folder}/@${res.id}/status`, {
+		width, height, status: 6, format, length: total
+	});
 
 	const allTiles:string[] = [];
 	const uploadUris:string[] = [];
@@ -208,9 +217,6 @@ async function handle(
 	// Finish remaining
 	await Promise.all(Object.values(running));
 
-	// Finalize
-	if(!omniId) await api(`/api/cli${folder}/@${res.id}?w=${width}&h=${height}&f=${format}&l=${total}`);
-
 	// Move tile for base.bin generation
 	if(isOmni) {
 		if(!omniId && !fs.existsSync('basebin')) fs.mkdirSync('basebin');
@@ -222,10 +228,13 @@ async function handle(
 		fs.renameSync(`${baseDir}/${idx}/${dzLevels - l}`, `basebin/${idx}/${dzLevels - l}`);
 	}
 
+	// Finalize
+	if(!omniId) await api(`/api/cli${folder}/@${res.id}/status`, { status: 4 });
+
 	fs.rmSync(outDir+'/'+res.id+'.dzi');
 }
 
-function log(str:string, pos:number, newLine:boolean=false) {
+function log(str:string, pos?:number, newLine:boolean=false) {
 	if(!newLine) newLine = pos == undefined;
 	if(!newLine) {
 		process.stdout.cursorTo(pos ?? 0);
