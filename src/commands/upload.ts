@@ -84,9 +84,10 @@ export async function upload(ignore:any, opts:{
 	}}
 
 	const hQueue:{[key:string]:Promise<any>} = {};
+	const threads = opts.type == 'omni' ? 1 : PROCESSING_THREADS;
 	for(let i=0;i<files.length;i++) try {
 		const queue = Object.values(hQueue);
-		if(queue.length >= PROCESSING_THREADS) await Promise.any(queue);
+		if(queue.length >= threads) await Promise.any(queue);
 		const f = files[i];
 		log(`Processing ${i+1} / ${files.length}...`, 0);
 		hQueue[f] = handle(f, outDir, folder, opts.format, opts.type, i, files.length, omniId, id => omniId = id, {
@@ -100,29 +101,28 @@ export async function upload(ignore:any, opts:{
 	await Promise.all(Object.values(hQueue));
 
 	if(omniId) {
+		const baseBinDir = path.join(outDir, omniId+'_basebin');
 		console.log('Creating optimized viewing package...');
 		const tiles:{
 			path: string;
 			buffer: Buffer;
 		}[] = [];
-		walkSync('basebin', t => tiles.push({
-			path: t.replace(/\\/g,'/').replace('basebin/',''),
+		walkSync(baseBinDir, t => tiles.push({
+			path: t.replace(/\\/g,'/').replace(/^.*_basebin\//,''),
 			buffer: fs.readFileSync(t)
 		}));
-		const path = `${omniId}/base.bin`;
+		const binPath = `${omniId}/base.bin`;
 		const postUri = await api<R2StoreResult>(`/api/${url.pathname.split('/')[1]}/store`, {
-			files: [path]
+			files: [binPath]
 		}).then(r => {
 			if(!r) throw new Error('Upload permission denied.');
-			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${path}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
+			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${binPath}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
 		});
 		await fetch(postUri[0], {
 			method: 'PUT',
 			body: generateMDP(tiles),
 			headers: { 'Content-Type': 'application/octet-stream' }
 		});
-		fs.rmSync('basebin', {recursive: true, force: true});
-		console.log('Done.');
 	}
 
 	fs.rmSync(outDir, {recursive: true, force: true});
@@ -174,6 +174,7 @@ async function handle(
 		pdfDpi?: number|string
 	} = {}
 ) {
+	const isOmni = type=='omni';
 	const isPdfPage = pdfPageRx.test(f);
 	if(isPdfPage) {
 		const basePdf = f.match(pdfPageRx)![1], pdfPage = Number(f.match(pdfPageRx)![2])-1;
@@ -191,20 +192,16 @@ async function handle(
 	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions?');
 
 	outDir = sanitize(outDir,outDir)
-	const baseDir = outDir+'/'+res.id;
+	const baseDir = path.join(outDir, res.id, isOmni ? idx.toString() : '');
 
 	const {width, height} = await tile(baseDir, f, format);
 	if(!height || !width) throw new Error('Could not read image dimensions');
 
 	if(isPdfPage) fs.rmSync(f);
 
-	const isOmni = type=='omni';
-	if(isOmni) {
-		if(!omniId) setOmniId(res.id);
-		fs.mkdirSync(baseDir);
-		fs.renameSync(baseDir+'_files', baseDir+'/'+idx);
-	}
-	else fs.renameSync(baseDir+'_files', baseDir);
+	if(isOmni && !omniId) setOmniId(res.id);
+
+	fs.renameSync(baseDir+'_files', baseDir);
 
 	// Update status
 	if(!omniId) await api(`/api/cli${folder}/@${res.id}/status`, {
@@ -243,19 +240,22 @@ async function handle(
 
 	// Move tile for base.bin generation
 	if(isOmni) {
-		if(!omniId && !fs.existsSync('basebin')) fs.mkdirSync('basebin');
+		const baseBinDir = path.join(outDir, res.id+'_basebin');
+		if(!omniId && !fs.existsSync(baseBinDir)) fs.mkdirSync(baseBinDir);
 		let d = Math.max(width, height), l = 0;
 		while(d > 1024) { d /= 2; l++; }
 		let dzLevels = 0, max = Math.max(width, height);
 		do dzLevels++; while ((max /= 2) > 1);
-		fs.mkdirSync('basebin/'+idx);
-		fs.renameSync(`${baseDir}/${idx}/${dzLevels - l}`, `basebin/${idx}/${dzLevels - l}`);
+		const level = dzLevels - l;
+		const baseBinImgDir = path.join(baseBinDir, idx+'');
+		fs.mkdirSync(baseBinImgDir);
+		fs.renameSync(path.join(baseDir, level.toString()), path.join(baseBinImgDir, level.toString()));
 	}
 
 	// Finalize
 	if(!omniId) await api(`/api/cli${folder}/@${res.id}/status`, { status: 4 });
 
-	fs.rmSync(outDir+'/'+res.id+'.dzi');
+	fs.rmSync(baseDir+'.dzi');
 }
 
 function log(str:string, pos?:number, newLine:boolean=false) {
