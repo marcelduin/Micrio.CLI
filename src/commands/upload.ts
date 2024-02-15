@@ -6,8 +6,8 @@ import { urlDashBase, conf } from '../lib/store.js';
 import { UserToken } from './login.js';
 import sharp from 'sharp';
 
-const SIGNED_URIS = 100;
-const UPLOAD_THREADS = 20;
+const SIGNED_URIS = 200;
+const UPLOAD_THREADS = 10;
 const PROCESSING_THREADS = 8;
 
 const account = conf.get('account') as UserToken;
