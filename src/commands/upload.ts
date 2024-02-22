@@ -7,8 +7,9 @@ import { UserToken } from './login.js';
 import sharp from 'sharp';
 
 const SIGNED_URIS = 200;
-const UPLOAD_THREADS = 10;
+const UPLOAD_THREADS = 15;
 const PROCESSING_THREADS = 8;
+const PROCESSING_THREADS_OMNI = 1;
 
 const account = conf.get('account') as UserToken;
 
@@ -83,14 +84,16 @@ export async function upload(ignore:any, opts:{
 		return error(e?.['message']??e??'An unknown error occurred');
 	}}
 
+	const uploader = new Uploader(folder, opts.format, outDir);
+
 	const hQueue:{[key:string]:Promise<any>} = {};
-	const threads = opts.type == 'omni' ? 1 : PROCESSING_THREADS;
+	const threads = opts.type == 'omni' ? PROCESSING_THREADS_OMNI : PROCESSING_THREADS;
 	for(let i=0;i<files.length;i++) try {
 		const queue = Object.values(hQueue);
 		if(queue.length >= threads) await Promise.any(queue);
 		const f = files[i];
 		log(`Processing ${i+1} / ${files.length}...`, 0);
-		hQueue[f] = handle(f, outDir, folder, opts.format, opts.type, i, files.length, omniId, id => omniId = id, {
+		hQueue[f] = handle(uploader, f, outDir, folder, opts.format, opts.type, i, files.length, omniId, id => omniId = id, {
 			pdfDpi: opts.dpi
 		}).then(() => delete hQueue[f]);
 	} catch(e) {
@@ -99,6 +102,7 @@ export async function upload(ignore:any, opts:{
 	}
 
 	await Promise.all(Object.values(hQueue));
+	await uploader.complete();
 
 	if(omniId) {
 		const baseBinDir = path.join(outDir, omniId+'_basebin');
@@ -161,6 +165,7 @@ const tile = (destDir: string, file:string, format:FormatType) : Promise<TileRes
 });
 
 async function handle(
+	uploader:Uploader,
 	f:string,
 	outDir:string,
 	folder:string,
@@ -208,35 +213,9 @@ async function handle(
 		width, height, status: 6, format, length: total
 	});
 
-	const allTiles:string[] = [];
-	const uploadUris:string[] = [];
-	walkSync(baseDir, t => allTiles.push(t));
-	const running:{[key:string]:Promise<any>} = {};
-
-	async function getUploadUris() {
-		const files = allTiles.slice(0, SIGNED_URIS);
-		if(files.length) uploadUris.push(...await api<R2StoreResult>(`/api/${folder.split('/')[1]}/store`, {files : files.map(f => sanitize(f, outDir))}).then(r => {
-			if(!r) throw new Error('Upload permission denied.');
-			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${sanitize(files[i], outDir)}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
-		}));
-	}
-
-	while(allTiles.length) {
-		const queue = Object.values(running);
-		if(queue.length >= UPLOAD_THREADS) await Promise.any(queue);
-		if(!uploadUris.length) await getUploadUris();
-
-		const tile = allTiles.shift();
-		if(!tile) throw new Error('Could not get tile to upload.');
-		running[tile] = fetch(uploadUris.shift()!, {
-			method: 'PUT',
-			body: new Blob([fs.readFileSync(tile)], {type: `image/${format}`}),
-			headers: { 'Content-Type': `image/${format}` }
-		}).then(() => delete running[tile]);
-	}
-
-	// Finish remaining
-	await Promise.all(Object.values(running));
+	const tiles:string[] = [];
+	walkSync(baseDir, t => tiles.push(t));
+	uploader.add(tiles);
 
 	// Move tile for base.bin generation
 	if(isOmni) {
@@ -253,7 +232,7 @@ async function handle(
 	}
 
 	// Finalize
-	if(!omniId) await api(`/api/cli${folder}/@${res.id}/status`, { status: 4 });
+	if(!omniId) uploader.add([() => api(`/api/cli${folder}/@${res.id}/status`, { status: 4 })]);
 
 	fs.rmSync(baseDir+'.dzi');
 }
@@ -298,4 +277,66 @@ function GetPdfInfo(file:string) : {
 	if(!width || !height || !pages) throw new Error('Invalid PDF file');
 
 	return { width, height, pages };
+}
+
+type JobType = string|(() => Promise<any>);
+
+class Uploader {
+	private jobs:JobType[] = [];
+	private uploadUris:string[] = [];
+	private started:boolean = false;
+	private oncomplete:Function|undefined;
+
+	running:Map<JobType, Promise<any>> = new Map();
+
+	constructor(
+		private folder:string,
+		private format:FormatType,
+		private outDir:string
+	) {
+		this.outDir = sanitize(outDir, outDir);
+	}
+
+	async getUploadUris() {
+		const files = this.jobs.filter(t => !(t instanceof Function)).slice(0, SIGNED_URIS) as string[];
+		if(files.length) this.uploadUris.push(...await api<R2StoreResult>(`/api/${this.folder.split('/')[1]}/store`, {files : files.map(f => sanitize(f, this.outDir))}).then(r => {
+			if(!r) throw new Error('Upload permission denied.');
+			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${sanitize(files[i], this.outDir)}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
+		}));
+	}
+
+	add(jobs:JobType[]) {
+		this.jobs.push(...jobs);
+		if(!this.started) this.start();
+	}
+
+	async start() {
+		if(this.started) return;
+		this.started = true;
+		while(this.jobs.length) {
+			const queue = Array.from(this.running.values());
+			if(queue.length >= UPLOAD_THREADS) await Promise.any(queue);
+			if(!this.uploadUris.length && !(this.jobs[0] instanceof Function)) await this.getUploadUris();
+
+			const job = this.jobs.shift();
+			if(!job) throw new Error('Could not get tile to upload.');
+
+			this.running.set(job, (job instanceof Function ? job() : fetch(this.uploadUris.shift()!, {
+				method: 'PUT',
+				body: new Blob([fs.readFileSync(job)], {type: `image/${this.format}`}),
+				headers: { 'Content-Type': `image/${this.format}` }
+			})).then(() => {
+				if(this.oncomplete) log(`Remaining uploads: ${this.jobs.length}...`, 0);
+				this.running.delete(job)
+			}));
+		}
+		await Promise.all(Array.from(this.running.values()));
+		this.started = false;
+		this.oncomplete?.();
+	}
+
+	complete() : Promise<void> { return new Promise(ok => {
+		if(!this.started) return ok();
+		this.oncomplete = ok;
+	}) }
 }
