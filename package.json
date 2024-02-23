@@ -1,6 +1,6 @@
 {
 	"name": "micrio.cli",
-	"version": "1.2.2",
+	"version": "1.2.3",
 	"description": "Command-line tool for processing and uploading images to Micrio",
 	"type": "module",
 	"bin": {
@@ -20,6 +20,10 @@
 		"type": "git",
 		"url": "https://github.com/marcelduin/Micrio.CLI.git"
 	},
+	"engines": {
+		"node": ">=18.0.0"
+	},
+	"engineStrict": true,
 	"homepage": "https://micr.io/",
 	"license": "MIT OR Apache-2.0",
 	"author": "Marcel Duin <marcel@micr.io>",
