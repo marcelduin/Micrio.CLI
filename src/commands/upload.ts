@@ -218,7 +218,7 @@ async function handle(
 	uploader.add(tiles);
 
 	// Move tile for base.bin generation
-	if(isOmni) {
+	if(isOmni) uploader.add([async () => {
 		const baseBinDir = path.join(outDir, res.id+'_basebin');
 		if(!omniId && !fs.existsSync(baseBinDir)) fs.mkdirSync(baseBinDir);
 		let d = Math.max(width, height), l = 0;
@@ -229,7 +229,7 @@ async function handle(
 		const baseBinImgDir = path.join(baseBinDir, idx+'');
 		fs.mkdirSync(baseBinImgDir);
 		fs.renameSync(path.join(baseDir, level.toString()), path.join(baseBinImgDir, level.toString()));
-	}
+	}]);
 
 	// Finalize
 	if(!omniId) uploader.add([() => api(`/api/cli${folder}/@${res.id}/status`, { status: 4 })]);
