@@ -7,8 +7,8 @@ import { upload } from './commands/upload.js';
 import process from 'process';
 
 const nodeVersion = Number(process.version.split('.')[0].replace('v',''));
-if(isNaN(nodeVersion) || nodeVersion < 18) {
-	console.log(`ERROR: Micrio.CLI requires NodeJS v18.0.0+ to run. Your current version is ${process.version}.`);
+if(isNaN(nodeVersion) || nodeVersion < 16) {
+	console.log(`ERROR: Micrio.CLI requires NodeJS v16.0.0+ to run. Your current version is ${process.version}.`);
 	console.log('');
 	console.log('Please update your NodeJS at https://nodejs.org/');
 	process.exit(1);

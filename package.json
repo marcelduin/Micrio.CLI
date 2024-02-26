@@ -1,6 +1,6 @@
 {
 	"name": "micrio.cli",
-	"version": "1.2.3",
+	"version": "1.2.4",
 	"description": "Command-line tool for processing and uploading images to Micrio",
 	"type": "module",
 	"bin": {
@@ -21,7 +21,7 @@
 		"url": "https://github.com/marcelduin/Micrio.CLI.git"
 	},
 	"engines": {
-		"node": ">=18.0.0"
+		"node": ">=16.0.0"
 	},
 	"engineStrict": true,
 	"homepage": "https://micr.io/",
@@ -30,6 +30,7 @@
 	"dependencies": {
 		"commander": "^11.1.0",
 		"conf": "^12.0.0",
+		"node-fetch": "^3.3.2",
 		"sharp": "^0.33.2"
 	},
 	"devDependencies": {

@@ -5,6 +5,7 @@ import path from 'path';
 import { urlDashBase, conf } from '../lib/store.js';
 import { UserToken } from './login.js';
 import sharp from 'sharp';
+import fetch from 'node-fetch';
 
 const SIGNED_URIS = 200;
 const UPLOAD_THREADS = 15;
@@ -13,15 +14,16 @@ const PROCESSING_THREADS_OMNI = 1;
 
 const account = conf.get('account') as UserToken;
 
-const api = <T>(path:string, data?:Object) : Promise<T> => fetch(urlDashBase+path,{
+const api = <T>(path:string, data?:Object) : Promise<T|undefined> => fetch(urlDashBase+path,{
 	method: data ? 'POST' : 'GET',
 	headers: Object.fromEntries([
 		['Cookie', `.AspNetCore.Identity.Application=${account.base64};`],
 		...(data ? [['Content-Type', 'application/json']] : [])
 	]),
 	body: data ? JSON.stringify(data) : undefined
-}).then(r => r?.json(), () => undefined).then(r => {
-	if(r?.error) throw new Error(r.error);
+}).then(r => r?.json() as T, () => undefined).then(r => {
+	const error = r && typeof r == 'object' && 'error' in r ? r['error'] as string : undefined;
+	if(error) throw new Error(error);
 	return r;
 });
 
