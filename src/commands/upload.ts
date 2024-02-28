@@ -5,7 +5,6 @@ import path from 'path';
 import { urlDashBase, conf } from '../lib/store.js';
 import { UserToken } from './login.js';
 import sharp from 'sharp';
-import fetch from 'node-fetch';
 
 const SIGNED_URIS = 200;
 const UPLOAD_THREADS = 15;
@@ -23,7 +22,10 @@ const api = <T>(path:string, data?:Object) : Promise<T|undefined> => fetch(urlDa
 	body: data ? JSON.stringify(data) : undefined
 }).then(r => r?.json() as T, () => undefined).then(r => {
 	const error = r && typeof r == 'object' && 'error' in r ? r['error'] as string : undefined;
-	if(error) throw new Error(error);
+	if(error) {
+		console.error('Error on URL: ' + path, data);
+		throw new Error(error);
+	}
 	return r;
 });
 

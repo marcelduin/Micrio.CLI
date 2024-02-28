@@ -1,6 +1,5 @@
 import { createGUID } from '../lib/utils.js';
 import { conf, urlAccountBase } from '../lib/store.js';
-import fetch from 'node-fetch';
 
 let account = conf.get('account');
 
