@@ -1,6 +1,6 @@
 {
 	"name": "micrio.cli",
-	"version": "1.2.42",
+	"version": "1.2.43",
 	"description": "Command-line tool for processing and uploading images to Micrio",
 	"type": "module",
 	"bin": {
@@ -30,6 +30,7 @@
 	"dependencies": {
 		"commander": "^11.1.0",
 		"conf": "^12.0.0",
+		"node-fetch": "^3.3.2",
 		"sharp": "^0.33.2"
 	},
 	"devDependencies": {

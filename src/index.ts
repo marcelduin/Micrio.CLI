@@ -25,7 +25,7 @@ if(account) {
 
 program.name('micrio')
 	.description('Local image processing and uploader to the Micrio dashboard')
-	.version('1.2.0');
+	.version('1.2.43');
 
 program.command('login')
 	.description('connect to your current Micrio session')

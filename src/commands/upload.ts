@@ -5,9 +5,10 @@ import path from 'path';
 import { urlDashBase, conf } from '../lib/store.js';
 import { UserToken } from './login.js';
 import sharp from 'sharp';
+import fetch from 'node-fetch';
 
 const SIGNED_URIS = 200;
-const UPLOAD_THREADS = 15;
+const UPLOAD_THREADS = 8;
 const PROCESSING_THREADS = 8;
 const PROCESSING_THREADS_OMNI = 1;
 
