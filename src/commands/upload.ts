@@ -8,9 +8,10 @@ import sharp from 'sharp';
 import fetch from 'node-fetch';
 
 const SIGNED_URIS = 200;
-const UPLOAD_THREADS = 8;
+const UPLOAD_THREADS = 6;
 const PROCESSING_THREADS = 8;
 const PROCESSING_THREADS_OMNI = 1;
+const NUM_UPLOAD_TRIES: number = 5;
 
 const account = conf.get('account') as UserToken;
 
@@ -293,6 +294,7 @@ class Uploader {
 	private oncomplete:Function|undefined;
 
 	running:Map<JobType, Promise<any>> = new Map();
+	errored:Map<JobType, number> = new Map();
 
 	constructor(
 		private folder:string,
@@ -333,6 +335,13 @@ class Uploader {
 			})).then(() => {
 				if(this.oncomplete) log(`Remaining uploads: ${this.jobs.length}...`, 0);
 				this.running.delete(job)
+			}, () => {
+				const numErrored = (this.errored.get(job) ?? 0) + 1;
+				this.errored.set(job, numErrored);
+				if(numErrored > NUM_UPLOAD_TRIES)
+					throw new Error(`Fatal error: could not ${job instanceof Function ? 'finalize upload' : `upload ${job[0]}`} after ${NUM_UPLOAD_TRIES} tries.`);
+				// Try again
+				this.jobs.push(job);
 			}));
 		}
 		await Promise.all(Array.from(this.running.values()));
