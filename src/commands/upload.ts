@@ -101,7 +101,11 @@ export async function upload(ignore:any, opts:{
 		log(`Processing ${i+1} / ${files.length}...`, 0);
 		hQueue[f] = handle(uploader, f, outDir, folder, opts.format, opts.type, i, files.length, omniId, id => omniId = id, {
 			pdfDpi: opts.dpi
-		}).then(() => delete hQueue[f]);
+		}).then(() => delete hQueue[f], (e) => {
+			error(`Could not tile ${f}: ${e?.message ?? 'Unknown error'}`);
+			if(opts.type == 'omni') throw e;
+			else delete hQueue[f];
+		});
 	} catch(e) {
 		/** @ts-ignore */
 		return error(e?.['message']??e??'An unknown error occurred');
