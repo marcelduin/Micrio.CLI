@@ -1,12 +1,13 @@
 {
 	"name": "micrio.cli",
-	"version": "1.2.44",
+	"version": "1.2.45",
 	"description": "Command-line tool for processing and uploading images to Micrio",
 	"type": "module",
 	"bin": {
 		"micrio": "./dist/index.js"
 	},
 	"scripts": {
+		"prebuild": "node -p \"'export const LIB_VERSION = ' + JSON.stringify(require('./package.json').version) + ';'\" > src/lib/version.ts",
 		"build": "npx tsc"
 	},
 	"keywords": [

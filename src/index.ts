@@ -5,6 +5,7 @@ import { UserToken, login } from './commands/login.js';
 import { conf } from './lib/store.js';
 import { upload } from './commands/upload.js';
 import process from 'process';
+import { LIB_VERSION } from './lib/version.js';
 
 const nodeVersion = Number(process.version.split('.')[0].replace('v',''));
 if(isNaN(nodeVersion) || nodeVersion < 18) {
@@ -16,7 +17,7 @@ if(isNaN(nodeVersion) || nodeVersion < 18) {
 
 let account = conf.get('account') as UserToken|undefined;
 
-console.log('<> Micrio CLI Tool');
+console.log('<> Micrio CLI Tool v'+LIB_VERSION);
 console.log();
 if(account) {
 	console.log('Logged in as ' + account.email)
@@ -25,7 +26,7 @@ if(account) {
 
 program.name('micrio')
 	.description('Local image processing and uploader to the Micrio dashboard')
-	.version('1.2.44');
+	.version('Version '+LIB_VERSION);
 
 program.command('login')
 	.description('connect to your current Micrio session')
