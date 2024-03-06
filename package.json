@@ -30,7 +30,6 @@
 	"dependencies": {
 		"commander": "^11.1.0",
 		"conf": "^12.0.0",
-		"node-fetch": "^3.3.2",
 		"sharp": "^0.33.2"
 	},
 	"devDependencies": {

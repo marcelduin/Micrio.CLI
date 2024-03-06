@@ -5,10 +5,10 @@ import path from 'path';
 import { urlDashBase, conf } from '../lib/store.js';
 import { UserToken } from './login.js';
 import sharp from 'sharp';
-import fetch from 'node-fetch';
+import https from 'https';
 
 const SIGNED_URIS = 200;
-const UPLOAD_THREADS = 6;
+const UPLOAD_THREADS = 12;
 const PROCESSING_THREADS = 8;
 const PROCESSING_THREADS_OMNI = 1;
 const NUM_UPLOAD_TRIES: number = 5;
@@ -292,6 +292,10 @@ class Uploader {
 	private uploadUris:string[] = [];
 	private started:boolean = false;
 	private oncomplete:Function|undefined;
+	private agent = new https.Agent({
+		rejectUnauthorized: true,
+		keepAlive: true
+	});
 
 	running:Map<JobType, Promise<any>> = new Map();
 	errored:Map<JobType, number> = new Map();
@@ -304,7 +308,7 @@ class Uploader {
 		this.outDir = sanitize(outDir, outDir);
 	}
 
-	async getUploadUris() {
+	private async getUploadUris() {
 		const files = this.jobs.filter(t => !(t instanceof Function)).slice(0, SIGNED_URIS) as string[];
 		if(files.length) this.uploadUris.push(...await api<R2StoreResult>(`/api/${this.folder.split('/')[1]}/store`, {files : files.map(f => sanitize(f, this.outDir))}).then(r => {
 			if(!r) throw new Error('Upload permission denied.');
@@ -317,7 +321,7 @@ class Uploader {
 		if(!this.started) this.start();
 	}
 
-	async start() {
+	private async start() {
 		if(this.started) return;
 		this.started = true;
 		while(this.jobs.length) {
@@ -328,18 +332,16 @@ class Uploader {
 			const job = this.jobs.shift();
 			if(!job) throw new Error('Could not get tile to upload.');
 
-			this.running.set(job, (job instanceof Function ? job() : fetch(this.uploadUris.shift()!, {
-				method: 'PUT',
-				body: new Blob([fs.readFileSync(job)], {type: `image/${this.format}`}),
-				headers: { 'Content-Type': `image/${this.format}` }
-			})).then(() => {
-				if(this.oncomplete) log(`Remaining uploads: ${this.jobs.length}...`, 0);
+			this.running.set(job,
+				(job instanceof Function ? job() : this.upload(this.uploadUris.shift()!, job)
+			).then(() => {
 				this.running.delete(job)
-			}, () => {
+				if(this.oncomplete) log(`Remaining uploads: ${this.jobs.length+this.running.size}...`, 0);
+			}, (e) => {
 				const numErrored = (this.errored.get(job) ?? 0) + 1;
 				this.errored.set(job, numErrored);
 				if(numErrored > NUM_UPLOAD_TRIES)
-					throw new Error(`Fatal error: could not ${job instanceof Function ? 'finalize upload' : `upload ${job[0]}`} after ${NUM_UPLOAD_TRIES} tries.`);
+					throw new Error(`Fatal error: could not ${job instanceof Function ? 'finalize upload' : `upload ${job}`} after ${NUM_UPLOAD_TRIES} tries. (${e?.message ?? 'Error'})`);
 				// Try again
 				this.jobs.push(job);
 			}));
@@ -353,4 +355,29 @@ class Uploader {
 		if(!this.started) return ok();
 		this.oncomplete = ok;
 	}) }
+
+	private async upload(_url:string, path:string) : Promise<void> { return new Promise((ok, err) => {
+		const url = new URL(_url);
+		const blob = fs.readFileSync(path);
+		const req = https.request({
+			host: url.host,
+			path: url.pathname+url.search,
+			method: 'PUT',
+			agent: this.agent,
+			headers: {
+				'Content-Type': `image/${this.format}`,
+				'Content-Length': blob.byteLength,
+			}
+		}, res => {
+			if(res.statusCode == 200) ok();
+			else err(new Error(res.statusCode+': '+res.statusMessage));
+			req.destroy();
+		});
+		req.on('error', (e) => {
+			err(e);
+			req.destroy();
+		});
+		req.write(blob);
+		req.end();
+	})}
 }
