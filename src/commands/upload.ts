@@ -379,7 +379,9 @@ class Uploader {
 		}
 		await Promise.all(Array.from(this.running.values()));
 		this.started = false;
-		this.oncomplete?.();
+		// If new jobs added meanwhile, do those first
+		if(this.jobs.length) this.start();
+		else this.oncomplete?.();
 	}
 
 	complete() : Promise<void> { return new Promise(ok => {
