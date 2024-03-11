@@ -10,26 +10,47 @@ import https from 'https';
 const SIGNED_URIS = 200;
 const UPLOAD_THREADS = 12;
 const PROCESSING_THREADS = 8;
-const PROCESSING_THREADS_OMNI = 1;
 const NUM_UPLOAD_TRIES: number = 5;
 
 const account = conf.get('account') as UserToken;
 
-const api = <T>(path:string, data?:Object) : Promise<T|undefined> => fetch(urlDashBase+path,{
-	method: data ? 'POST' : 'GET',
-	headers: Object.fromEntries([
-		['Cookie', `.AspNetCore.Identity.Application=${account.base64};`],
-		...(data ? [['Content-Type', 'application/json']] : [])
-	]),
-	body: data ? JSON.stringify(data) : undefined
-}).then(r => r?.json() as T, () => undefined).then(r => {
-	const error = r && typeof r == 'object' && 'error' in r ? r['error'] as string : undefined;
-	if(error) {
-		console.error('Error on URL: ' + path, data);
-		throw new Error(error);
-	}
-	return r;
-});
+const api = <T>(agent: https.Agent, path:string, data:Object) : Promise<T|undefined> => new Promise((ok, err) => {
+	const url = new URL(urlDashBase+path);
+	const blob = JSON.stringify(data);
+	const req = https.request({
+		host: url.host,
+		path: url.pathname+url.search,
+		method: 'POST',
+		agent: agent,
+		headers: {
+			'Cookie': `.AspNetCore.Identity.Application=${account.base64};`,
+			'Content-Type': 'application/json',
+			'Content-Length': blob.length
+		}
+	}, res => {
+		if(res.statusCode != 200) {
+			err(new Error(res.statusCode+': '+res.statusMessage));
+			req.destroy();
+		}
+		else {
+			const body:Uint8Array[] = [];
+			res.on('data', chunk => {
+				body.push(chunk);
+			})
+			.on('end', () => {
+				ok(JSON.parse(Buffer.concat(body).toString()));
+				req.destroy();
+			});
+
+		}
+	});
+	req.on('error', (e) => {
+		err(e);
+		req.destroy();
+	});
+	req.write(blob);
+	req.end();
+})
 
 const error = (str:string) : void => console.log('Error: ' + str);
 const sanitize = (f:string, outDir:string) : string => f.replace(/\\+/g,'/').replace(outDir+'/','');
@@ -58,6 +79,10 @@ export async function upload(ignore:any, opts:{
 	}
 
 	const folder = url.pathname;
+	const httpAgent = new https.Agent({
+		rejectUnauthorized: true,
+		keepAlive: true
+	});
 
 	const start = Date.now();
 
@@ -90,16 +115,20 @@ export async function upload(ignore:any, opts:{
 		return error(e?.['message']??e??'An unknown error occurred');
 	}}
 
-	const uploader = new Uploader(folder, opts.format, outDir);
+	const uploader = new Uploader(httpAgent, folder, opts.format, outDir);
 
 	const hQueue:{[key:string]:Promise<any>} = {};
-	const threads = opts.type == 'omni' ? PROCESSING_THREADS_OMNI : PROCESSING_THREADS;
+	// Omni starts with single image to create main ID
+	let threads = opts.type == 'omni' ? 1 : PROCESSING_THREADS;
 	for(let i=0;i<files.length;i++) try {
 		const queue = Object.values(hQueue);
 		if(queue.length >= threads) await Promise.any(queue);
 		const f = files[i];
 		log(`Processing ${i+1} / ${files.length}...`, 0);
-		hQueue[f] = handle(uploader, f, outDir, folder, opts.format, opts.type, i, files.length, omniId, id => omniId = id, {
+		hQueue[f] = handle(uploader, f, outDir, folder, opts.format, opts.type, i, files.length, omniId, id => {
+			omniId = id;
+			threads = PROCESSING_THREADS;
+		}, {
 			pdfDpi: opts.dpi
 		}).then(() => delete hQueue[f], (e) => {
 			error(`Could not tile ${f}: ${e?.message ?? 'Unknown error'}`);
@@ -126,7 +155,7 @@ export async function upload(ignore:any, opts:{
 			buffer: fs.readFileSync(t)
 		}));
 		const binPath = `${omniId}/base.bin`;
-		const postUri = await api<R2StoreResult>(`/api/${url.pathname.split('/')[1]}/store`, {
+		const postUri = await api<R2StoreResult>(httpAgent, `/api/${url.pathname.split('/')[1]}/store`, {
 			files: [binPath]
 		}).then(r => {
 			if(!r) throw new Error('Upload permission denied.');
@@ -141,7 +170,7 @@ export async function upload(ignore:any, opts:{
 
 	fs.rmSync(outDir, {recursive: true, force: true});
 
-	log(`Succesfully added ${origImageNum} file${origImageNum==1?'':'s'} in ${Math.round(Date.now()-start)/1000}s.`, 0);
+	log(`Succesfully added ${omniId ? '1 360 object image' : `${origImageNum} file${origImageNum==1?'':'s'}`} in ${Math.round(Date.now()-start)/1000}s.`, 0);
 	console.log();
 }
 
@@ -201,7 +230,7 @@ async function handle(
 
 	const fName = isPdfPage ? f.replace(/\.tif$/,'') : f;
 
-	const res = omniId ? {id: omniId} : await api<{id:string}>(`/api/cli${folder}/create`,{
+	const res = omniId ? {id: omniId} : await api<{id:string}>(uploader.agent, `/api/cli${folder}/create`,{
 		name: fName, type, format
 	});
 	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions?');
@@ -219,7 +248,7 @@ async function handle(
 	fs.renameSync(baseDir+'_files', baseDir);
 
 	// Update status
-	if(!omniId) await api(`/api/cli${folder}/@${res.id}/status`, {
+	if(!omniId) await api(uploader.agent, `/api/cli${folder}/@${res.id}/status`, {
 		width, height, status: 6, format, length: total
 	});
 
@@ -242,7 +271,7 @@ async function handle(
 	}]);
 
 	// Finalize
-	if(!omniId) uploader.add([() => api(`/api/cli${folder}/@${res.id}/status`, { status: 4 })]);
+	if(!omniId) uploader.add([() => api(uploader.agent, `/api/cli${folder}/@${res.id}/status`, { status: 4 })]);
 
 	fs.rmSync(baseDir+'.dzi');
 }
@@ -296,15 +325,12 @@ class Uploader {
 	private uploadUris:string[] = [];
 	private started:boolean = false;
 	private oncomplete:Function|undefined;
-	private agent = new https.Agent({
-		rejectUnauthorized: true,
-		keepAlive: true
-	});
 
 	running:Map<JobType, Promise<any>> = new Map();
 	errored:Map<JobType, number> = new Map();
 
 	constructor(
+		public agent:https.Agent,
 		private folder:string,
 		private format:FormatType,
 		private outDir:string
@@ -314,10 +340,11 @@ class Uploader {
 
 	private async getUploadUris() {
 		const files = this.jobs.filter(t => !(t instanceof Function)).slice(0, SIGNED_URIS) as string[];
-		if(files.length) this.uploadUris.push(...await api<R2StoreResult>(`/api/${this.folder.split('/')[1]}/store`, {files : files.map(f => sanitize(f, this.outDir))}).then(r => {
-			if(!r) throw new Error('Upload permission denied.');
-			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${sanitize(files[i], this.outDir)}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
-		}));
+		if(files.length) this.uploadUris.push(...await api<R2StoreResult>(this.agent, `/api/${this.folder.split('/')[1]}/store`, {files : files.map(f => sanitize(f, this.outDir))})
+			.catch(e => { throw new Error('Upload error: '+(e.message ?? 'Upload permission denied')) })
+			.then(r => { if(!r) throw new Error('Upload permission denied.');
+				return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${sanitize(files[i], this.outDir)}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
+			}));
 	}
 
 	add(jobs:JobType[]) {
