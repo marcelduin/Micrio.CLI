@@ -7,9 +7,9 @@ import { UserToken } from './login.js';
 import sharp from 'sharp';
 import https from 'https';
 
-const SIGNED_URIS = 200;
-const UPLOAD_THREADS = 12;
-const PROCESSING_THREADS = 8;
+const SIGNED_URIS = 480;
+const UPLOAD_THREADS = 60;
+const PROCESSING_THREADS = 2;
 const NUM_UPLOAD_TRIES: number = 5;
 
 const account = conf.get('account') as UserToken;
