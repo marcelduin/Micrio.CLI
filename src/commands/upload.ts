@@ -65,6 +65,12 @@ interface R2StoreResult {
 type FormatType = ('jpg'|'webp'|'png');
 type ImageType = ('2d'|'360'|'omni');
 
+interface ImageInfo {
+	id: string;
+	width: number;
+	height: number;
+};
+
 export async function upload(ignore:any, opts:{
 	destination: string;
 	format: FormatType;
@@ -103,7 +109,12 @@ export async function upload(ignore:any, opts:{
 	const outDir = path.join(tmpDir, Math.floor(Math.random()*10000000)+'');
 	if(!fs.existsSync(outDir)) fs.mkdirSync(outDir);
 
-	let omniId:string|undefined;
+	// TS is weird here -- if this can be undefined, compilation messes up
+	let omni:{
+		id?: string;
+		width?: number;
+		height?: number;
+	} = {};
 
 	for(let i=0;i<files.length;i++) { const f = files[i]; if(f.endsWith('.pdf')) try {
 		const info = GetPdfInfo(f);
@@ -125,12 +136,15 @@ export async function upload(ignore:any, opts:{
 		if(queue.length >= threads) await Promise.any(queue);
 		const f = files[i];
 		log(`Processing ${i+1} / ${files.length}...`, 0);
-		hQueue[f] = handle(uploader, f, outDir, folder, opts.format, opts.type, i, files.length, omniId, id => {
-			omniId = id;
-			threads = PROCESSING_THREADS;
-		}, {
+		hQueue[f] = handle(uploader, f, outDir, folder, opts.format, opts.type, i, files.length, omni?.id, {
 			pdfDpi: opts.dpi
-		}).then(() => delete hQueue[f], (e) => {
+		}).then((r) => {
+			delete hQueue[f];
+			if(opts.type == 'omni' && !omni.id) {
+				omni = r;
+				threads = PROCESSING_THREADS;
+			}
+		}, (e) => {
 			error(`Could not tile ${f}: ${e?.message ?? 'Unknown error'}`);
 			if(opts.type == 'omni') throw e;
 			else delete hQueue[f];
@@ -143,9 +157,24 @@ export async function upload(ignore:any, opts:{
 	await Promise.all(Object.values(hQueue));
 	await uploader.complete();
 
-	if(omniId) {
-		const baseBinDir = path.join(outDir, omniId+'_basebin');
+	if(omni.id && omni.width && omni.height) {
+		const baseBinDir = path.join(outDir, omni.id+'_basebin');
 		console.log('Creating optimized viewing package...');
+
+		fs.mkdirSync(baseBinDir);
+		let d = Math.max(omni.width, omni.height), l = 0;
+		while(d > 1024) { d /= 2; l++; }
+		let dzLevels = 0, max = Math.max(omni.width, omni.height);
+		do dzLevels++; while ((max /= 2) > 1);
+		const level = dzLevels - l;
+
+		for(let i=0;i<files.length;i++) {
+			const baseDir = path.join(outDir, omni.id, i.toString());
+			const baseBinImgDir = path.join(baseBinDir, i.toString());
+			fs.mkdirSync(baseBinImgDir);
+			fs.renameSync(path.join(baseDir, level.toString()), path.join(baseBinImgDir, level.toString()));
+		}
+
 		const tiles:{
 			path: string;
 			buffer: Buffer;
@@ -154,7 +183,7 @@ export async function upload(ignore:any, opts:{
 			path: t.replace(/\\/g,'/').replace(/^.*_basebin\//,''),
 			buffer: fs.readFileSync(t)
 		}));
-		const binPath = `${omniId}/base.bin`;
+		const binPath = `${omni.id}/base.bin`;
 		const postUri = await api<R2StoreResult>(httpAgent, `/api/${url.pathname.split('/')[1]}/store`, {
 			files: [binPath]
 		}).then(r => {
@@ -166,11 +195,13 @@ export async function upload(ignore:any, opts:{
 			body: generateMDP(tiles),
 			headers: { 'Content-Type': 'application/octet-stream' }
 		});
+		await api(uploader.agent, `/api/cli${folder}/@${omni.id}/status`, { status: 4 });
 	}
 
+	console.log('Finalizing...');
 	fs.rmSync(outDir, {recursive: true, force: true});
 
-	log(`Succesfully added ${omniId ? '1 360 object image' : `${origImageNum} file${origImageNum==1?'':'s'}`} in ${Math.round(Date.now()-start)/1000}s.`, 0);
+	log(`Succesfully added ${omni ? '1 360 object image' : `${origImageNum} file${origImageNum==1?'':'s'}`} in ${Math.round(Date.now()-start)/1000}s.`, 0);
 	console.log();
 }
 
@@ -213,11 +244,10 @@ async function handle(
 	idx:number,
 	total:number,
 	omniId:string|undefined,
-	setOmniId:(i:string)=>void,
 	opts: {
 		pdfDpi?: number|string
 	} = {}
-) {
+) : Promise<ImageInfo> {
 	const isOmni = type=='omni';
 	const isPdfPage = pdfPageRx.test(f);
 	if(isPdfPage) {
@@ -243,9 +273,8 @@ async function handle(
 
 	if(isPdfPage) fs.rmSync(f);
 
-	if(isOmni && !omniId) setOmniId(res.id);
-
 	fs.renameSync(baseDir+'_files', baseDir);
+	fs.rmSync(path.join(baseDir, 'vips-properties.xml'));
 
 	// Update status
 	if(!omniId) await api(uploader.agent, `/api/cli${folder}/@${res.id}/status`, {
@@ -256,24 +285,12 @@ async function handle(
 	walkSync(baseDir, t => tiles.push(t));
 	uploader.add(tiles);
 
-	// Move tile for base.bin generation
-	if(isOmni) uploader.add([async () => {
-		const baseBinDir = path.join(outDir, res.id+'_basebin');
-		if(!omniId && !fs.existsSync(baseBinDir)) fs.mkdirSync(baseBinDir);
-		let d = Math.max(width, height), l = 0;
-		while(d > 1024) { d /= 2; l++; }
-		let dzLevels = 0, max = Math.max(width, height);
-		do dzLevels++; while ((max /= 2) > 1);
-		const level = dzLevels - l;
-		const baseBinImgDir = path.join(baseBinDir, idx+'');
-		fs.mkdirSync(baseBinImgDir);
-		fs.renameSync(path.join(baseDir, level.toString()), path.join(baseBinImgDir, level.toString()));
-	}]);
-
 	// Finalize
-	if(!omniId) uploader.add([() => api(uploader.agent, `/api/cli${folder}/@${res.id}/status`, { status: 4 })]);
+	if(type != 'omni') uploader.add([() => api(uploader.agent, `/api/cli${folder}/@${res.id}/status`, { status: 4 })]);
 
 	fs.rmSync(baseDir+'.dzi');
+
+	return { id: res.id, width, height };
 }
 
 function log(str:string, pos?:number, newLine:boolean=false) {
@@ -356,9 +373,9 @@ class Uploader {
 		if(this.started) return;
 		this.started = true;
 		while(this.jobs.length) {
-			const queue = Array.from(this.running.values());
-			if(queue.length >= UPLOAD_THREADS) await Promise.any(queue);
-			if(!this.uploadUris.length && !(this.jobs[0] instanceof Function)) await this.getUploadUris();
+			if(this.running.size >= UPLOAD_THREADS) await Promise.any(Array.from(this.running.values()));
+			if(!this.uploadUris.length && this.jobs.length && !(this.jobs[0] instanceof Function))
+				await this.getUploadUris();
 
 			const job = this.jobs.shift();
 			if(!job) throw new Error('Could not get tile to upload.');
@@ -367,7 +384,12 @@ class Uploader {
 				(job instanceof Function ? job() : this.upload(this.uploadUris.shift()!, job)
 			).then(() => {
 				this.running.delete(job)
-				if(this.oncomplete) log(`Remaining uploads: ${this.jobs.length+this.running.size}...`, 0);
+				const remaining = this.jobs.length+this.running.size
+				if(this.oncomplete) log(`Remaining uploads: ${remaining}...`, 0);
+				if(remaining == 0) {
+					this.started = false;
+					this.oncomplete?.();
+				}
 			}, (e) => {
 				const numErrored = (this.errored.get(job) ?? 0) + 1;
 				this.errored.set(job, numErrored);
@@ -377,15 +399,10 @@ class Uploader {
 				this.jobs.push(job);
 			}));
 		}
-		await Promise.all(Array.from(this.running.values()));
-		this.started = false;
-		// If new jobs added meanwhile, do those first
-		if(this.jobs.length) this.start();
-		else this.oncomplete?.();
 	}
 
 	complete() : Promise<void> { return new Promise(ok => {
-		if(!this.started) return ok();
+		if(this.jobs.length+this.running.size == 0) return ok();
 		this.oncomplete = ok;
 	}) }
 
