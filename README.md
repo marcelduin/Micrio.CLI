@@ -50,3 +50,7 @@ For more commands and options, refer to the [documentation](https://doc.micr.io/
 ## Documentation
 
 For the latest documentation, [click here](https://doc.micr.io/dashboard/v3/cli-tool.html).
+
+## Acknowledgements
+
+* [Erwin Verbruggen](https://github.com/verwinv) for rigorous testing

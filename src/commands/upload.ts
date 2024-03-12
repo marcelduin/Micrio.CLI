@@ -207,6 +207,8 @@ export async function upload(ignore:any, opts:{
 
 	log(`Succesfully added ${opts.type == 'omni' ? `a 360 object image (${origImageNum} frames)` : `${origImageNum} file${origImageNum==1?'':'s'}`} in ${Math.round(Date.now()-start)/1000}s.`, 0);
 	console.log();
+
+	process.exit(1);
 }
 
 const walkSync = (dir:string, callback:(s:string)=>void) : void => fs.lstatSync(dir).isDirectory()
