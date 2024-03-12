@@ -8,9 +8,10 @@ import sharp from 'sharp';
 import https from 'https';
 
 const SIGNED_URIS = 480;
-const UPLOAD_THREADS = 60;
-const PROCESSING_THREADS = 2;
-const NUM_UPLOAD_TRIES: number = 5;
+const UPLOAD_THREADS = 120;
+const PROCESSING_THREADS = 8;
+const OMNI_PROCESSING_THREADS = 2;
+const NUM_UPLOAD_TRIES: number = 3;
 
 const account = conf.get('account') as UserToken;
 
@@ -87,7 +88,8 @@ export async function upload(ignore:any, opts:{
 	const folder = url.pathname;
 	const httpAgent = new https.Agent({
 		rejectUnauthorized: true,
-		keepAlive: true
+		keepAlive: true,
+		timeout: 3000
 	});
 
 	const start = Date.now();
@@ -142,7 +144,7 @@ export async function upload(ignore:any, opts:{
 			delete hQueue[f];
 			if(opts.type == 'omni' && !omni.id) {
 				omni = r;
-				threads = PROCESSING_THREADS;
+				threads = OMNI_PROCESSING_THREADS;
 			}
 		}, (e) => {
 			error(`Could not tile ${f}: ${e?.message ?? 'Unknown error'}`);
@@ -155,7 +157,9 @@ export async function upload(ignore:any, opts:{
 	}
 
 	await Promise.all(Object.values(hQueue));
+	console.log();
 	await uploader.complete();
+	console.log();
 
 	if(omni.id && omni.width && omni.height) {
 		const baseBinDir = path.join(outDir, omni.id+'_basebin');
@@ -201,7 +205,7 @@ export async function upload(ignore:any, opts:{
 	console.log('Finalizing...');
 	fs.rmSync(outDir, {recursive: true, force: true});
 
-	log(`Succesfully added ${omni ? '1 360 object image' : `${origImageNum} file${origImageNum==1?'':'s'}`} in ${Math.round(Date.now()-start)/1000}s.`, 0);
+	log(`Succesfully added ${opts.type == 'omni' ? `a 360 object image (${origImageNum} frames)` : `${origImageNum} file${origImageNum==1?'':'s'}`} in ${Math.round(Date.now()-start)/1000}s.`, 0);
 	console.log();
 }
 
@@ -339,9 +343,8 @@ type JobType = string|(() => Promise<any>);
 
 class Uploader {
 	private jobs:JobType[] = [];
-	private uploadUris:string[] = [];
-	private started:boolean = false;
 	private oncomplete:Function|undefined;
+	private uris:{[key:string]:string|Promise<void>} = {};
 
 	running:Map<JobType, Promise<any>> = new Map();
 	errored:Map<JobType, number> = new Map();
@@ -355,56 +358,60 @@ class Uploader {
 		this.outDir = sanitize(outDir, outDir);
 	}
 
-	private async getUploadUris() {
-		const files = this.jobs.filter(t => !(t instanceof Function)).slice(0, SIGNED_URIS) as string[];
-		if(files.length) this.uploadUris.push(...await api<R2StoreResult>(this.agent, `/api/${this.folder.split('/')[1]}/store`, {files : files.map(f => sanitize(f, this.outDir))})
-			.catch(e => { throw new Error('Upload error: '+(e.message ?? 'Upload permission denied')) })
-			.then(r => { if(!r) throw new Error('Upload permission denied.');
-				return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${sanitize(files[i], this.outDir)}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
-			}));
-	}
-
 	add(jobs:JobType[]) {
 		this.jobs.push(...jobs);
-		if(!this.started) this.start();
-	}
-
-	private async start() {
-		if(this.started) return;
-		this.started = true;
-		while(this.jobs.length) {
-			if(this.running.size >= UPLOAD_THREADS) await Promise.any(Array.from(this.running.values()));
-			if(!this.uploadUris.length && this.jobs.length && !(this.jobs[0] instanceof Function))
-				await this.getUploadUris();
-
-			const job = this.jobs.shift();
-			if(!job) throw new Error('Could not get tile to upload.');
-
-			this.running.set(job,
-				(job instanceof Function ? job() : this.upload(this.uploadUris.shift()!, job)
-			).then(() => {
-				this.running.delete(job)
-				const remaining = this.jobs.length+this.running.size
-				if(this.oncomplete) log(`Remaining uploads: ${remaining}...`, 0);
-				if(remaining == 0) {
-					this.started = false;
-					this.oncomplete?.();
-				}
-			}, (e) => {
-				const numErrored = (this.errored.get(job) ?? 0) + 1;
-				this.errored.set(job, numErrored);
-				if(numErrored > NUM_UPLOAD_TRIES)
-					throw new Error(`Fatal error: could not ${job instanceof Function ? 'finalize upload' : `upload ${job}`} after ${NUM_UPLOAD_TRIES} tries. (${e?.message ?? 'Error'})`);
-				// Try again
-				this.jobs.push(job);
-			}));
-		}
+		this.nextBatch();
 	}
 
 	complete() : Promise<void> { return new Promise(ok => {
 		if(this.jobs.length+this.running.size == 0) return ok();
 		this.oncomplete = ok;
 	}) }
+
+	private getUploadUris(first?:string) : Promise<void>|void {
+		const files = this.jobs.filter(t => !(t instanceof Function || this.uris[t])).slice(0, SIGNED_URIS - (first ? 1 : 0)) as string[];
+		if(first) files.unshift(first);
+		if(!files.length) return;
+		const call = api<R2StoreResult>(this.agent, `/api/${this.folder.split('/')[1]}/store`, {files : files.map(f => sanitize(f, this.outDir))})
+			.catch(e => { throw new Error('Upload error: '+(e.message ?? 'Upload permission denied')) })
+			.then(r => { if(!r) throw new Error('Upload permission denied.');
+				r.keys.forEach((sig,i) => this.uris[files[i]] = `https://micrio.${r.account}.r2.cloudflarestorage.com/${sanitize(files[i], this.outDir)}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`);
+			});
+		files.forEach(f => this.uris[f] = call);
+	}
+
+	private async getUploadUri(f:string) : Promise<string> {
+		if(!this.uris[f]) await this.getUploadUris(f);
+		if(this.uris[f] instanceof Promise) await this.uris[f];
+		return this.uris[f] as string;
+	}
+
+	private nextBatch() {
+		let r = UPLOAD_THREADS - this.running.size;
+		while(--r > 0) this.next();
+	}
+
+	private async next() {
+		if(this.running.size >= UPLOAD_THREADS) return;
+		const job = this.jobs.shift();
+		if(!job) return;
+		this.running.set(job, (job instanceof Function ? job() : this.getUploadUri(job).then(uri => this.upload(uri!, job)))
+		.catch((e) => {
+			const numErrored = (this.errored.get(job) ?? 0) + 1;
+			this.errored.set(job, numErrored);
+			if(numErrored > NUM_UPLOAD_TRIES)
+				throw new Error(`Fatal error: could not ${job instanceof Function ? 'finalize upload' : `upload ${job}`} after ${NUM_UPLOAD_TRIES} tries. (${e?.message ?? 'Error'})`);
+			// Try again
+			this.jobs.push(job);
+		}).then(() => {
+			this.running.delete(job)
+			if(typeof job == 'string') delete this.uris[job];
+			const remaining = this.jobs.length+this.running.size
+			if(this.oncomplete) log(`Remaining uploads: ${remaining}...`, 0);
+			if(this.jobs.length) this.nextBatch();
+			else if(!remaining) this.oncomplete?.();
+		}));
+	}
 
 	private async upload(_url:string, path:string) : Promise<void> { return new Promise((ok, err) => {
 		const url = new URL(_url);
@@ -419,13 +426,13 @@ class Uploader {
 				'Content-Length': blob.byteLength,
 			}
 		}, res => {
+			req.destroy();
 			if(res.statusCode == 200) ok();
 			else err(new Error(res.statusCode+': '+res.statusMessage));
-			req.destroy();
 		});
 		req.on('error', (e) => {
-			err(e);
 			req.destroy();
+			err(e);
 		});
 		req.write(blob);
 		req.end();

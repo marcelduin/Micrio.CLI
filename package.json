@@ -1,6 +1,6 @@
 {
 	"name": "micrio.cli",
-	"version": "1.2.5",
+	"version": "1.2.51",
 	"description": "Command-line tool for processing and uploading images to Micrio",
 	"type": "module",
 	"bin": {
