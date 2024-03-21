@@ -29,21 +29,16 @@ const api = <T>(agent: https.Agent, path:string, data:Object) : Promise<T|undefi
 			'Content-Length': blob.length
 		}
 	}, res => {
-		if(res.statusCode != 200) {
-			err(new Error(res.statusCode+': '+res.statusMessage));
+		const body:Uint8Array[] = [];
+		res.on('data', chunk => {
+			body.push(chunk);
+		})
+		.on('end', () => {
+			const b = JSON.parse(Buffer.concat(body).toString());
+			if(res.statusCode != 200) err(new Error(`${path}: ${res.statusCode} ${res.statusMessage}: ${b?.error ?? 'Unknown error'}`));
+			else ok(b);
 			req.destroy();
-		}
-		else {
-			const body:Uint8Array[] = [];
-			res.on('data', chunk => {
-				body.push(chunk);
-			})
-			.on('end', () => {
-				ok(JSON.parse(Buffer.concat(body).toString()));
-				req.destroy();
-			});
-
-		}
+		});
 	});
 	req.on('error', (e) => {
 		err(e);
@@ -60,6 +55,7 @@ interface R2StoreResult {
 	time: string;
 	key: string;
 	account: string;
+	r2Base: string;
 	keys: string[];
 };
 
@@ -192,7 +188,7 @@ export async function upload(ignore:any, opts:{
 			files: [binPath]
 		}).then(r => {
 			if(!r) throw new Error('Upload permission denied.');
-			return r.keys.map((sig,i) => `https://micrio.${r.account}.r2.cloudflarestorage.com/${binPath}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
+			return r.keys.map((sig,i) => `https://${r.r2Base}.r2.cloudflarestorage.com/${binPath}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`)
 		});
 		await fetch(postUri[0], {
 			method: 'PUT',
@@ -377,7 +373,7 @@ class Uploader {
 		const call = api<R2StoreResult>(this.agent, `/api/${this.folder.split('/')[1]}/store`, {files : files.map(f => sanitize(f, this.outDir))})
 			.catch(e => { throw new Error('Upload error: '+(e.message ?? 'Upload permission denied')) })
 			.then(r => { if(!r) throw new Error('Upload permission denied.');
-				r.keys.forEach((sig,i) => this.uris[files[i]] = `https://micrio.${r.account}.r2.cloudflarestorage.com/${sanitize(files[i], this.outDir)}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`);
+				r.keys.forEach((sig,i) => this.uris[files[i]] = `https://${r.r2Base}.r2.cloudflarestorage.com/${sanitize(files[i], this.outDir)}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=${r.key}%2F${r.time.slice(0,8)}%2Fauto%2Fs3%2Faws4_request&X-Amz-Date=${r.time}&X-Amz-Expires=300&X-Amz-Signature=${sig}&X-Amz-SignedHeaders=host&x-id=PutObject`);
 			});
 		files.forEach(f => this.uris[f] = call);
 	}
