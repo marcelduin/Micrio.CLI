@@ -1,11 +1,11 @@
 import fs from 'fs';
 import os from 'os';
-import { execSync } from 'child_process';
 import path from 'path';
 import { urlDashBase, conf } from '../lib/store.js';
 import { UserToken } from './login.js';
 import sharp from 'sharp';
 import https from 'https';
+import pdf2img from 'pdf-img-convert';
 
 const SIGNED_URIS = 480;
 const UPLOAD_THREADS = 120;
@@ -72,7 +72,7 @@ export async function upload(ignore:any, opts:{
 	destination: string;
 	format: FormatType;
 	type: ImageType;
-	dpi: string;
+	pdfScale: string;
 }, o:{args: string[]}) {
 	if(!account?.email) return error(`Not logged in. Run 'micrio login' first`);
 
@@ -114,29 +114,32 @@ export async function upload(ignore:any, opts:{
 		height?: number;
 	} = {};
 
-	for(let i=0;i<files.length;i++) { const f = files[i]; if(f.endsWith('.pdf')) try {
-		const info = GetPdfInfo(f);
+	let hasPdf:boolean = false;
+
+	// PDF parser
+	for(let i=0;i<files.length;i++) { const f = files[i]; if(f.endsWith('.pdf')) {
+		log(`Parsing PDF file ${f}...`);
+		hasPdf = true;
+		await pdf2img.convert(f, {scale: parseInt(opts.pdfScale||'4')}).then(pages => pages.forEach((p,j) => {
+			const fName = `${f}.${(j+1).toString().padStart(4, '0')}.png`;
+			fs.writeFileSync(fName, p);
+			files.push(fName);
+		}), e => error(`PDF reading error: ${e.toString()}`));
 		files.splice(i--, 1);
-		for(let p=0;p<info.pages;p++) files.push(f+'.'+(p+1).toString().padStart(4, '0'));
-		i+=info.pages;
-	} catch(e) {
-		/** @ts-ignore */
-		return error(e?.['message']??e??'An unknown error occurred');
 	}}
 
 	const uploader = new Uploader(httpAgent, folder, opts.format, outDir);
 
 	const hQueue:{[key:string]:Promise<any>} = {};
 	// Omni starts with single image to create main ID
-	let threads = opts.type == 'omni' ? 1 : PROCESSING_THREADS;
+	// PDF one by one to preserve correct order
+	let threads = hasPdf || opts.type == 'omni' ? 1 : PROCESSING_THREADS;
 	for(let i=0;i<files.length;i++) try {
 		const queue = Object.values(hQueue);
 		if(queue.length >= threads) await Promise.any(queue);
 		const f = files[i];
 		log(`Processing ${i+1} / ${files.length}...`, 0);
-		hQueue[f] = handle(uploader, f, outDir, folder, opts.format, opts.type, i, files.length, omni?.id, {
-			pdfDpi: opts.dpi
-		}).then((r) => {
+		hQueue[f] = handle(uploader, f, outDir, folder, opts.format, opts.type, i, files.length, omni?.id).then((r) => {
 			delete hQueue[f];
 			if(opts.type == 'omni' && !omni.id) {
 				omni = r;
@@ -211,7 +214,7 @@ const walkSync = (dir:string, callback:(s:string)=>void) : void => fs.lstatSync(
 	? fs.readdirSync(dir).forEach(f => walkSync(path.join(dir, f), callback))
 	: callback(dir);
 
-const pdfPageRx = /^(.*\.pdf)\.(\d+)$/;
+const pdfPageRx = /^(.*\.pdf)\.(\d+)\.(png|tif)$/;
 
 interface TileResult {
 	width: number;
@@ -246,21 +249,13 @@ async function handle(
 	idx:number,
 	total:number,
 	omniId:string|undefined,
-	opts: {
-		pdfDpi?: number|string
-	} = {}
 ) : Promise<ImageInfo> {
 	const isOmni = type=='omni';
 	const isPdfPage = pdfPageRx.test(f);
-	if(isPdfPage) {
-		const basePdf = f.match(pdfPageRx)![1], pdfPage = Number(f.match(pdfPageRx)![2])-1;
-		f+='.tif';
-		execSync(`vips pdfload ${basePdf} --page=${pdfPage} --dpi=${opts.pdfDpi??'150'} ${f}`);
-	}
 
 	if(!fs.existsSync(f)) throw new Error(`File '${f}' not found`);
 
-	const fName = isPdfPage ? f.replace(/\.tif$/,'') : f;
+	const fName = isPdfPage ? f.replace(/\.(tif|png)$/,'') : f;
 
 	const res = omniId ? {id: omniId} : await api<{id:string}>(uploader.agent, `/api/cli${folder}/create`,{
 		name: fName, type, format
@@ -320,21 +315,6 @@ function generateMDP(images:{
 	});
 
 	return new Blob(arr, {type: 'application/octet-stream'});
-}
-
-function GetPdfInfo(file:string) : {
-	width: number;
-	height: number;
-	pages: number;
-} {
-	const r = new TextDecoder().decode(execSync(`vipsheader -a ${file}`));
-	const width = Number(r.match(/width: (\d+)/m)?.[1]),
-		height = Number(r.match(/height: (\d+)/m)?.[1]),
-		pages = Number(r.match(/(pdf-n_pages|n-pages): (\d+)/m)?.[2]);
-
-	if(!width || !height || !pages) throw new Error('Invalid PDF file');
-
-	return { width, height, pages };
 }
 
 type JobType = string|(() => Promise<any>);
