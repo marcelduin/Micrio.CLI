@@ -1,19 +1,11 @@
+import type { LoginStatusResult } from '../types';
+
 import { createGUID } from '../lib/utils.js';
 import { conf, urlAccountBase } from '../lib/store.js';
 
 let account = conf.get('account');
 
 const to = (fn:(()=>any)|undefined,ms:number=1000) : Promise<void> => new Promise(ok => setTimeout(async () => {await fn?.();ok()}, ms));
-
-export interface UserToken {
-	email: string;
-	base64: string;
-	expires: Date;
-}
-interface LoginStatusResult {
-	status: ('ok'|'wait'|'error');
-	token?: UserToken;
-};
 
 export async function login() {
 	const id = createGUID();

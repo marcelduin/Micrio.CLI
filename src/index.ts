@@ -1,11 +1,13 @@
 #! /usr/bin/env node
 
+import type{ UserToken } from './types';
+
 import { program, Option } from 'commander';
-import { UserToken, login } from './commands/login.js';
 import { conf } from './lib/store.js';
 import { upload } from './commands/upload.js';
 import process from 'process';
 import { LIB_VERSION } from './lib/version.js';
+import { login } from './commands/login.js';
 
 const nodeVersion = Number(process.version.split('.')[0].replace('v',''));
 if(isNaN(nodeVersion) || nodeVersion < 18) {

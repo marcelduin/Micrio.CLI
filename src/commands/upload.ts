@@ -1,8 +1,9 @@
+import type { FormatType, ImageInfo, ImageType, R2StoreResult, TileResult, UserToken } from '../types';
+
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { urlDashBase, conf } from '../lib/store.js';
-import { UserToken } from './login.js';
 import sharp from 'sharp';
 import https from 'https';
 import pdf2img from 'pdf-img-convert';
@@ -50,23 +51,6 @@ const api = <T>(agent: https.Agent, path:string, data:Object) : Promise<T|undefi
 
 const error = (str:string) : void => console.log('Error: ' + str);
 const sanitize = (f:string, outDir:string) : string => f.replace(/\\+/g,'/').replace(outDir+'/','');
-
-interface R2StoreResult {
-	time: string;
-	key: string;
-	account: string;
-	r2Base: string;
-	keys: string[];
-};
-
-type FormatType = ('jpg'|'webp'|'png');
-type ImageType = ('2d'|'360'|'omni');
-
-interface ImageInfo {
-	id: string;
-	width: number;
-	height: number;
-};
 
 export async function upload(ignore:any, opts:{
 	destination: string;
@@ -215,11 +199,6 @@ const walkSync = (dir:string, callback:(s:string)=>void) : void => fs.lstatSync(
 	: callback(dir);
 
 const pdfPageRx = /^(.*\.pdf)\.(\d+)\.(png|tif)$/;
-
-interface TileResult {
-	width: number;
-	height: number;
-}
 
 const tile = (destDir: string, file:string, format:FormatType) : Promise<TileResult> => new Promise((ok, err) => {
 	sharp(fs.readFileSync(file), {
