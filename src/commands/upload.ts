@@ -9,8 +9,8 @@ import https from 'https';
 import pdf2img from 'pdf-img-convert';
 
 const SIGNED_URIS = 480;
-const UPLOAD_THREADS = 40;
-const PROCESSING_THREADS = 6;
+const UPLOAD_THREADS = 100;
+const PROCESSING_THREADS = 8;
 const OMNI_PROCESSING_THREADS = 2;
 const NUM_UPLOAD_TRIES: number = 3;
 
