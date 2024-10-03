@@ -203,7 +203,7 @@ const walkSync = (dir:string, callback:(s:string)=>void) : void => fs.lstatSync(
 const pdfPageRx = /^(.*\.pdf)\.(\d+)\.(png|tif)$/;
 
 const tile = (destDir: string, file:string, format:FormatType) : Promise<TileResult> => new Promise((ok, err) => {
-	sharp(fs.readFileSync(file), {
+	sharp(file, {
 		limitInputPixels: 1E5 * 1E5,
 		unlimited: true
 	}).toFormat(format, {
