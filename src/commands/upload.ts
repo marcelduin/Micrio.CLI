@@ -84,7 +84,7 @@ export async function upload(ignore:any, opts:{
 
 	if(!files.length) return error('No images to process');
 
-	const origImageNum = files.length;
+	let origImageNum = files.length;
 
 	const tmpDir = path.join(os.tmpdir(), '_micrio');
 	if(!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir);
@@ -130,7 +130,9 @@ export async function upload(ignore:any, opts:{
 				threads = OMNI_PROCESSING_THREADS;
 			}
 		}, (e) => {
-			error(`Could not tile ${f}: ${e?.message ?? 'Unknown error'}`);
+			throw e;
+			error(`Could not tile ${f}: ${e?.message?.trim() ?? 'Unknown error'}`);
+			origImageNum--;
 			if(opts.type == 'omni') throw e;
 			else delete hQueue[f];
 		});
@@ -140,7 +142,7 @@ export async function upload(ignore:any, opts:{
 	}
 
 	await Promise.all(Object.values(hQueue));
-	console.log();
+	if(origImageNum) console.log();
 	await uploader.complete();
 	console.log();
 
@@ -188,7 +190,7 @@ export async function upload(ignore:any, opts:{
 	console.log('Finalizing...');
 	fs.rmSync(outDir, {recursive: true, force: true});
 
-	log(`Succesfully added ${opts.type == 'omni' ? `a 360 object image (${origImageNum} frames)` : `${origImageNum} file${origImageNum==1?'':'s'}`} in ${Math.round(Date.now()-start)/1000}s.`, 0);
+	log(`${origImageNum ? 'Succesfully a' : 'A'}dded ${opts.type == 'omni' ? `a 360 object image (${origImageNum} frames)` : `${origImageNum} file${origImageNum==1?'':'s'}`} in ${Math.round(Date.now()-start)/1000}s.`, 0);
 	console.log();
 
 	process.exit(1);
