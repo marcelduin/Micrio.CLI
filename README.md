@@ -7,7 +7,7 @@
 1. Install the Micrio tool as a global binary
 
 	```bash
-	npm i -g micrio.cli
+	npm i -g @micrio/cli
 	```
 
 2. Log in to your Micrio account and follow the steps you are prompted with
