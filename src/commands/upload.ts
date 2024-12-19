@@ -239,7 +239,7 @@ async function handle(
 	const fName = isPdfPage ? f.replace(/\.(tif|png)$/,'') : f;
 
 	const res = omniId ? {id: omniId} : await api<{id:string}>(uploader.agent, `/api/cli${folder}/create`,{
-		name: fName, type, format
+		name: encodeURIComponent(fName), type, format
 	});
 	if(!res) throw new Error('Could not create image in Micrio! Do you have the correct permissions?');
 
